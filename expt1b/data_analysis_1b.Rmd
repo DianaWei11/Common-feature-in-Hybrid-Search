@@ -1,0 +1,1264 @@
+---
+title: "merge processing"
+author: "Diana Wei"
+date: "2023-04-21"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(readxl)
+library(Matrix)
+library(data.table)
+library(readxl)
+library(tidyverse)
+library(Matrix)
+library(data.table)
+library("reshape") 
+library(readxl)
+library(readxl)
+library(tidyverse)
+library(Matrix)
+library(data.table)
+library(DescTools)
+library(car)
+#library(ggpubr)
+require(gridExtra)
+library(Matrix)
+library(data.table)
+library(lme4)
+require("rstatix")
+library("afex")
+library(sjstats)
+library("rmcorr")
+library(multcomp)
+require("maxLik")
+library(scales)
+library(Hmisc)
+library(cowplot)
+library(viridis)
+library(afex)
+library(heplots)
+
+
+# dir need to change
+#mydir = "~/Library/CloudStorage/Box-Box/Honor Thesis/Common-Unique/merge/main"
+# cleanData: after removing low acc participants
+# reassigned: add new variable priming after cleanData. The trial only includes search task.
+
+```
+
+```{r import all files from that directory}
+# Custom function to read files and check if they have 230 full trials, possibly removing an extra row
+read_csv_if_230_trials <- function(file_path) {
+  df <- read.csv(file_path, skip = 3, header = TRUE)
+  if (nrow(df) == 230) {  # if there's an unexpected extra row
+    df <- df[-(1+1), ]  # Assuming the extra row is just below the header, remove the second row
+  }
+  if (nrow(df) == 229) {
+    return(df)
+  } else {
+    return(NULL)
+  }
+}
+
+# List and read files with pattern ".csv"
+files <- list.files(pattern = "568133")
+#data_frames1 <- lapply(files, read_csv_if_229_trials)
+data_frames <- lapply(files, read_csv_if_230_trials)
+
+# Bind all data frames together row-wise
+my_data_frame <- do.call(rbind, data_frames)
+29541/229
+
+id = data.frame(subID = rep(1:129,each = 229)) # create a new df with name id
+df = cbind(my_data_frame,id) # combined two df to assign subID
+
+```
+
+
+```{r}
+# check if the datafile have enough trial number
+df %>% group_by(subID, tasks) %>% count() %>% filter(tasks == "search")
+
+```
+
+```{r remove low acc participants}
+lowacc = df %>%
+  group_by(subID,tasks) %>% 
+  mutate(accuracy = mean(correct)) %>% 
+  mutate(lowAcc = ifelse(tasks == "search" & accuracy < 0.75, "bad ACC", "passed"))%>% filter(lowAcc == "bad ACC")
+lowID = unique(lowacc$subID)
+df_acc_remove = df %>% filter(!subID %in% lowID) # create df for accuracy passed participants.
+
+data = df_acc_remove # now data is low acc removed
+129-60
+# we have 69 participant remaining
+
+# check demographics
+# maybe put later because of the priming stuff...
+df_acc_remove %>% filter(tasks == "demo") %>% group_by(response) %>% count()
+# age range: 18-47
+# race: white 21, Asian 69, not Hispanic or Latino: 53 (10), black or african american 1,
+# handedness: right 57, left 6, other 
+# gender: male 11, female 49, non-binary:3
+
+data$cond_target = as.factor(data$cond_target)
+data$cond_level = as.factor(data$cond_level)
+data$subID = as.factor(data$subID)
+
+# export the acc removed data
+write.csv(data, "unprocessed_data.csv", row.names = FALSE)
+```
+
+```{r reassign priming condition}
+# find the search task only
+search = data %>%
+  filter(tasks == "search") %>%
+  dplyr::select(-subID)
+
+# reassign subID after participant removing
+id = data.frame(subID = rep(1:69,each = 180)) # create a new df with name id
+search = cbind(search,id) # combined two df to assign subID
+
+# create previous target and condition variables
+# make sure each beginging of block there is no value because there should not be any priming
+search <- search %>%
+  group_by(subID, randomBlock) %>%
+  mutate(
+    previous_level = lag(cond_level),
+    previous_target = lag(cond_target)
+  ) %>%
+  ungroup()
+
+# assign two colors for the target
+# target 1 is bin. color 1 = blue, color 2 = red;
+# target 2 is boat, color 1 = red, color 2 = yellow;
+# target 3 is chair, color 1 = yellow, color 2 = blue.
+
+# reassign primes
+prime = search %>%
+  mutate(trial_struc = 
+         ifelse(cond_target == previous_target, "target repeat",
+         ifelse(previous_target == "Target1" & cond_target == "Target2" & cond_level == "yellow", "unique",
+         ifelse(previous_target == "Target1" & cond_target == "Target2" & cond_level == "red", "common",
+         ifelse(previous_target == "Target1" & cond_target == "Target3" & cond_level == "yellow", "unique",
+         ifelse(previous_target == "Target1" & cond_target == "Target3" & cond_level == "blue", "common",
+                
+         ifelse(previous_target == "Target2" & cond_target == "Target1" & cond_level == "blue", "unique",
+         ifelse(previous_target == "Target2" & cond_target == "Target1" & cond_level == "red", "common",
+         ifelse(previous_target == "Target2" & cond_target == "Target3" & cond_level == "yellow", "common",
+         ifelse(previous_target == "Target2" & cond_target == "Target3" & cond_level == "blue", "unique",
+                
+         ifelse(previous_target == "Target3" & cond_target == "Target2" & cond_level == "yellow", "common",
+         ifelse(previous_target == "Target3" & cond_target == "Target2" & cond_level == "red", "unique",
+         ifelse(previous_target == "Target3" & cond_target == "Target1" &cond_level == "red", "unique",
+         ifelse(previous_target == "Target3" & cond_target == "Target1" &cond_level == "blue", "common",
+                
+         ifelse(cond_level == "neutral", "neutral",
+                "rest")))))))))))))))
+
+# remove no priming rows
+prime = prime %>%     
+  group_by(subID) %>%
+  filter(!(row_number() == 1 | row_number() == 91)) %>%
+  ungroup()
+  
+write.csv(prime, "primeExpt1b_recheck.csv")
+```
+
+
+```{r RT criteria}
+df_time= prime %>%
+        mutate(timing = 
+        ifelse(tasks == "search" & RT > 3000, "time out",
+        ifelse(tasks == "search" & RT < 250, "too fast","in time")))
+
+df_intime = df_time %>% filter(timing == "in time")
+
+
+findoutlier <- function(x) {
+  return(x < quantile(x, .25) - 3*IQR(x) | x > quantile(x, .75) + 3*IQR(x))
+}
+
+df_findoutlier <- df_intime %>%
+        group_by(subID) %>% #find outlier for each subject in each condition.
+        mutate(outlier = ifelse(findoutlier(RT), RT, NA))
+
+
+df_no_oulier = df_findoutlier %>%
+  filter(is.na(outlier) == T) 
+
+# check out the data loss. 0.02
+(12420-12174)/12420
+
+```
+
+```{r check insufficient trial participants}
+180*0.7 # <126 will be insufficient trials
+suf_searchtrials = df_no_oulier %>%
+  group_by(subID) %>% dplyr::summarise(n = n()) %>%
+  filter(n>=126) # change n>= depends on the calculation
+sufID = unique(suf_searchtrials$subID)
+df_insuf_remove = df_no_oulier %>% filter(subID %in% sufID)
+data = df_insuf_remove
+
+# no one is removed
+# exported the RT filtered df
+write.csv(data, "cleanSearchData_recheck.csv")
+
+```
+### DATA ANALYSIS #####
+
+# Training Data
+```{r traing data}
+train = unprocessed_data %>% 
+  filter(tasks == "training") %>% 
+  filter(RT < 3000 & RT > 250) %>%
+  group_by(subID, cond_level) %>%
+  mutate(acc = mean(correct)) %>%
+  mutate(rt = mean(RT))
+
+train %>%
+  group_by(cond_level) %>% summarise(mean(rt), sd(rt),mean(acc), sd(acc))
+```
+
+#Search Data
+```{r one way}
+# import search data
+search <- cleanSearchData_recheck
+
+# tidy variable types
+search$cond_level = as.factor(search$cond_level)
+search$subID = as.factor(search$subID)
+search$cond_target = as.factor(search$cond_target)
+search$trial_struc = as.factor(search$trial_struc)
+
+searchdf = df1b %>%
+  filter(tasks == "search") %>%
+  dplyr::select(subID, cond_level, cond_target, trial_struc, correct,RT)
+write.csv(searchdf, "searchdf.csv")
+
+# for acc
+one.way1 <- search %>% 
+  filter(trial_struc != "target repeat" & trial_struc != "rest") %>%
+  group_by(subID, cond_level)%>%
+  summarise(acc = mean(correct)) %>%
+  aov_car(data = ., formula = acc ~ cond_level + Error(subID / cond_level))
+summary(one.way1)
+# finally, calculate the effect size
+effectsize::eta_squared(one.way1, partial = TRUE)
+
+# for RT
+two.way3 <- search %>%
+  filter(tasks == "search") %>%
+  filter(correct == 1) %>%
+  filter(trial_struc != "target repeat") %>%
+  group_by(subID, trial_struc) %>%
+  summarise(rt = mean(RT), .groups = "drop") %>%
+  ungroup()
+anova_results <- anova_test(data = two.way3, formula = rt ~ trial_struc + Error(subID / (trial_struc)),
+             effect.size = "pes")
+anova_table <- get_anova_table(anova_results, correction = "none")
+# Calculate Cohen's d for all pairwise comparisons of cond_level
+library(effectsize)
+
+# Group statistics
+group_stats <- two.way3 %>%
+  group_by(trial_struc) %>%
+  summarise(
+    mean_rt = mean(rt),
+    sd_rt = sd(rt),
+    n = n(),
+    .groups = "drop"
+  )
+
+one.way2 <- search %>%
+  filter(tasks == "search") %>%
+  filter(correct == 1) %>%
+  filter(trial_struc != "target repeat") %>%
+  group_by(subID, cond_level) %>%
+  summarise(rt = mean(RT)) %>%
+  aov_car(data = ., formula = rt ~ cond_level + Error(subID / cond_level))
+summary(one.way2)
+# finally, calculate the effect size
+effectsize::eta_squared(one.way2, partial = TRUE)
+
+###### Post-hoc
+library(emmeans)
+# Perform pairwise comparisons to get t score and p value
+pairwise_results <- emmeans(one.way2, pairwise ~ cond_level)
+summary(pairwise_results$contrasts, adjust = "bonferroni")
+# cohen's d for RT
+# Aggregate RT by subID and cond_level
+wide_data <- search %>%
+  filter(tasks == "search", correct == 1, trial_struc != "target repeat") %>%
+  group_by(subID, trial_struc) %>%
+  summarise(mean_rt = mean(RT), .groups = "drop") %>%
+  pivot_wider(names_from = trial_struc, values_from = mean_rt)  # Reshape to wide format
+
+# Calculate differences and Cohen's d
+wide_data <- wide_data %>%
+  mutate(difference = common - unique)
+# common - neutral = 1.37
+# common - unique = 0.36
+# neutral - unique = -0.76
+
+mean_diff <- mean(wide_data$difference, na.rm = TRUE)
+sd_diff <- sd(wide_data$difference, na.rm = TRUE)
+
+cohen_d <- mean_diff / sd_diff
+cohen_d
+
+
+############################################################
+# anova from xinger#
+two.way3 <- searchRT %>%
+  group_by(subID, cond_level, target) %>%
+  summarise(rt = mean(RT), .groups = "drop") %>%
+  ungroup()
+
+anova_results <- anova_test(data = two.way3, formula = rt ~ cond_level * target + Error(subID / (cond_level * target)),
+             effect.size = "pes")
+
+anova_table <- get_anova_table(anova_results, correction = "none")
+```
+```{r RT to check distractor baseline: why collapse}
+search$cond_level = as.factor(search$cond_level)
+searchdf  = searchdf %>%
+  mutate(cond_color = 
+           ifelse(cond_target == "Target1" & cond_level == "blue", "color1",
+           ifelse(cond_target == "Target1" & cond_level == "red", "color2",
+           ifelse(cond_target == "Target2" & cond_level == "yellow", "color1",
+           ifelse(cond_target == "Target2" & cond_level == "red", "color2", 
+           ifelse(cond_target == "Target3" & cond_level == "blue", "color1",
+           ifelse(cond_target == "Target3" & cond_level == "yellow", "color2", "neutral")))))))
+search$cond_color = as.factor(search$cond_color)
+two.way3 <- search %>%
+  filter(tasks == "search") %>%
+  filter(correct == 1) %>%
+  filter(trial_struc != "target repeat") %>%
+  group_by(subID, cond_target, cond_color, ) %>%
+  summarise(rt = mean(RT), .groups = "drop") %>%
+  ungroup()
+anova_results <- anova_test(data = two.way3, formula = rt ~ cond_target*cond_color + Error(subID / (cond_target*cond_color)),
+             effect.size = "pes")
+anova_table <- get_anova_table(anova_results, correction = "none")
+# Calculate Cohen's d for all pairwise comparisons of cond_level
+library(effectsize)
+
+# Group statistics
+group_stats <- two.way3 %>%
+  group_by(trial_struc) %>%
+  summarise(
+    mean_rt = mean(rt),
+    sd_rt = sd(rt),
+    n = n(),
+    .groups = "drop"
+  )
+
+one.way2 <- search %>%
+  filter(tasks == "search") %>%
+  filter(correct == 1) %>%
+  filter(trial_struc != "target repeat") %>%
+  group_by(subID, cond_target, cond_color) %>%
+  summarise(rt = mean(RT)) %>%
+  aov_car(data = ., formula = rt ~ cond_target* cond_color + Error(subID / cond_target* cond_color))
+summary(one.way2)
+# finally, calculate the effect size
+effectsize::eta_squared(one.way2, partial = TRUE)
+
+###### Post-hoc
+library(emmeans)
+# Perform pairwise comparisons to get t score and p value
+pairwise_results <- emmeans(one.way2, pairwise ~ cond_target:cond_color)
+summary(pairwise_results$contrasts, adjust = "bonferroni")
+# cohen's d for RT
+# Aggregate RT by subID and cond_level
+wide_data <- search %>%
+  filter(tasks == "search", correct == 1, trial_struc != "target repeat") %>%
+  group_by(subID, cond_target, cond_color) %>%
+  summarise(mean_rt = mean(RT), .groups = "drop") %>%
+  pivot_wider(names_from = c(cond_target, cond_color), values_from = mean_rt)  # Reshape to wide format
+
+# Calculate differences and Cohen's d
+wide_data <- wide_data %>%
+  mutate(difference = Target3_neutral - Target1_neutral)
+# Target1_color1 - Target3_color1 = 0.45
+# Target1_color2 - Target2_color2 = 0.28
+# Target2_color1 - Target3_color2 = 0.37
+# Target2_neutral - Target3_neutral = 0.06
+# Target2_neutral - Target1_neutral = 0.03
+# Target3_neutral - Target1_neutral = 0.13
+
+mean_diff <- mean(wide_data$difference, na.rm = TRUE)
+sd_diff <- sd(wide_data$difference, na.rm = TRUE)
+
+cohen_d <- mean_diff / sd_diff
+cohen_d
+
+
+
+
+```
+
+```{r RT to check distractor baseline: why collapse}
+two.way3 <- search %>%
+  filter(tasks == "search") %>%
+  filter(correct == 1) %>%
+  filter(cond_target != "Target1") %>%
+  group_by(subID, cond_target, cond_level) %>%
+  summarise(rt = mean(RT), .groups = "drop") %>%
+  ungroup()
+anova_results <- anova_test(data = two.way3, formula = rt ~ cond_target*cond_level + Error(subID / (cond_target*cond_level)),
+             effect.size = "pes")
+anova_table <- get_anova_table(anova_results, correction = "none")
+# Calculate Cohen's d for all pairwise comparisons of cond_level
+library(effectsize)
+
+# Group statistics
+group_stats <- two.way3 %>%
+  group_by(trial_struc) %>%
+  summarise(
+    mean_rt = mean(rt),
+    sd_rt = sd(rt),
+    n = n(),
+    .groups = "drop"
+  )
+
+one.way2 <- search %>%
+  filter(tasks == "search") %>%
+  filter(correct == 1) %>%
+  filter(trial_struc != "target repeat") %>%
+  group_by(subID, cond_target, cond_color) %>%
+  summarise(rt = mean(RT)) %>%
+  aov_car(data = ., formula = rt ~ cond_target* cond_color + Error(subID / cond_target* cond_color))
+summary(one.way2)
+# finally, calculate the effect size
+effectsize::eta_squared(one.way2, partial = TRUE)
+
+###### Post-hoc
+library(emmeans)
+# Perform pairwise comparisons to get t score and p value
+pairwise_results <- emmeans(one.way2, pairwise ~ cond_target:cond_color)
+summary(pairwise_results$contrasts, adjust = "bonferroni")
+# cohen's d for RT
+# Aggregate RT by subID and cond_level
+wide_data <- search %>%
+  filter(tasks == "search", correct == 1, trial_struc != "target repeat") %>%
+  group_by(subID, cond_target, cond_color) %>%
+  summarise(mean_rt = mean(RT), .groups = "drop") %>%
+  pivot_wider(names_from = c(cond_target, cond_color), values_from = mean_rt)  # Reshape to wide format
+
+# Calculate differences and Cohen's d
+wide_data <- wide_data %>%
+  mutate(difference = Target3_neutral - Target1_neutral)
+# Target1_color1 - Target3_color1 = 0.45
+# Target1_color2 - Target2_color2 = 0.28
+# Target2_color1 - Target3_color2 = 0.37
+# Target2_neutral - Target3_neutral = 0.06
+# Target2_neutral - Target1_neutral = 0.03
+# Target3_neutral - Target1_neutral = 0.13
+
+mean_diff <- mean(wide_data$difference, na.rm = TRUE)
+sd_diff <- sd(wide_data$difference, na.rm = TRUE)
+
+cohen_d <- mean_diff / sd_diff
+cohen_d
+
+
+```
+
+
+################## Graph ##################################
+```{r RT bar}
+cbp <- c("#253D8C", "#BAB3B7","#B73508", "#F5D44B") 
+## Calculates mean, sd, se and IC
+ rtsummary1b <- data %>%
+   group_by(cond_level) %>%
+   summarise(
+     n = n(),
+     sd = sd(RT, na.rm = TRUE),
+     rt = mean(RT)
+   )%>%
+   mutate(se=sd/sqrt(n))  %>%
+   mutate(ci=se * qt((1-0.05)/2 + .5, n-1)) %>%
+   mutate(transrt = rt-600)
+ 
+rtbar1b = ggplot(data = rtsummary1b, aes(x = cond_level, y = transrt, fill = cond_level)) + 
+  #facet_wrap(~cond_level,
+             #strip.position = "bottom")  +
+  ylab(NULL)+ 
+   geom_bar(stat="identity", color="black", width = 0.8,
+           position=position_dodge()) +
+  geom_errorbar(aes(ymin=transrt-ci, ymax=transrt+ci), width=.3, linewidth = 0.5,
+                position=position_dodge(.5))+ 
+  scale_y_continuous(limits = c(0,400), breaks=seq(0,400,50),
+                     labels=seq(600,1000,50))+
+  theme_classic() + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        strip.text.y = element_text(size = 17, face = "bold"))+
+  scale_fill_manual(values = cbp)+
+  theme(axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.text.y = element_text(face = "bold", size = 15),
+        axis.ticks.x = element_blank(),
+        strip.text.x = element_text(size = 12, face = "bold")) + 
+  theme(legend.position = c(0.65, 0.93), legend.text = element_text(size = 11, face = "bold"), 
+        legend.direction = "vertical", 
+        legend.spacing = unit(0.3, "cm"), 
+        legend.key.height = unit(0.6, "cm"),
+        legend.key.width = unit(0.4, "cm"),legend.key.size = unit(1, "cm")) +
+  theme(plot.title = element_text(size = 19, face = "bold", hjust = 0.5)) +
+  theme(axis.title.y = element_text(size = 17, face = "bold", margin = margin(r = 5))) +
+  theme(strip.background = element_blank(), strip.placement = "outside", strip.switch.pad.grid = unit(0, "lines"))+
+  ylab("Reaction Time (ms)")+
+  labs(fill = "");rtbar1b
+```
+
+```{r acc bargraph}
+accsummary <- search %>%
+  group_by(cond_level) %>%
+  summarise(
+    n = n(),
+    sd = sd(correct, na.rm = TRUE),
+    acc = mean(correct)
+  )%>%
+  mutate(se=sd/sqrt(n))  %>%
+  mutate(ci=se * qt((1-0.05)/2 + .5, n-1)) %>%
+  mutate(transacc = acc - 0.7)
+
+# graph
+accbar = ggplot(data = accsummary, aes(x = cond_level, y = acc, fill = cond_level)) +
+  ylab(NULL)+ 
+   geom_bar(stat="identity", color="black", width = 0.8,
+           position=position_dodge()) +
+  geom_errorbar(aes(ymin=acc-ci, ymax=acc+ci), width=.3, size = 0.5,
+                position=position_dodge(.5))+ 
+  scale_y_continuous(limits = c(0,1))+#, breaks=seq(0,0.3,0.05),
+                     #labels=seq(0.7,1,0.05)) +
+  theme_classic() + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        strip.text.y = element_text(size = 17, face = "bold"))+
+  scale_fill_manual(values = cbp) +
+  theme(axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.text.y = element_text(face = "bold", size = 15),
+        axis.ticks.x = element_blank(),
+        strip.text.x = element_text(size = 12, face = "bold")) + 
+  theme(legend.position = c(0.6, 0.8), legend.text = element_text(size = 11, face = "bold"), 
+        legend.title = element_text(size = 13, face = "bold"), legend.direction = "horizontal", 
+        legend.spacing = unit(0.5, "cm"), legend.key.width = unit(0.5, "cm"),
+        legend.key.size = unit(1, "cm")) +
+  theme(plot.title = element_text(size = 19, face = "bold", hjust = 0.5)) +
+  theme(axis.title.y = element_text(size = 17, face = "bold", margin = margin(r = 5))) +
+  theme(strip.background = element_blank(), strip.placement = "outside", strip.switch.pad.grid = unit(0, "lines"))+
+  ylab("Accuracy")+
+  labs(fill = "")+
+  theme(legend.position = "none", 
+          plot.title = element_blank());accbar
+
+######### Bind RT and Acc together
+bindbar = plot_grid(rtbar1b, accbar, labels = "AUTO")
+bindbar
+```
+
+# Cross experimen comparison
+# create tidy df
+```{r cross expt comparison}
+# tidy up the df for analysis
+
+df1a = df1a %>% 
+  filter(tasks == "search") %>%
+  dplyr::select(subID, cond_level, RT, correct) %>%
+  mutate(Expt = "1a")
+
+df1a$cond_level = as.factor(df1a$cond_level)
+df1a$Expt = as.factor(df1a$Expt)
+
+df1b = df1b %>% 
+  filter(type == "test", tasks == "search") %>%
+  dplyr::select(subID, trial_struc, RT, correct) %>%
+  mutate(Expt = "1b")
+df1b = df1b %>% mutate(cond_level = trial_struc) %>%
+  dplyr::select(-trial_struc)
+
+df1b$cond_level = as.factor(df1b$cond_level)
+df1b$Expt = as.factor(df1b$Expt)
+
+
+df1a$subID = as.numeric(df1a$subID)
+df1b$subID = as.numeric(df1b$subID)
+
+df = rbind(df1a, df1b) %>%
+  mutate(subID = ifelse(Expt == "1a", subID, subID+122))
+
+
+df$subID = as.factor(df$subID)
+write.csv(df, "crossExptdf.csv")
+
+```
+
+
+# statsiticas for cros exp comoarison
+```{r}
+# Load necessary package
+library(dplyr)
+
+# Calculate the mean RT for each participant in each condition
+mean_RT <- df %>%
+  filter(correct == 1, cond_level != "target repeat")%>%
+  group_by(subID, Expt, cond_level) %>%
+  summarise(mean_RT = mean(RT, na.rm = TRUE)) %>%
+  ungroup()
+
+
+# cross exp comparison using mixed ANOVA model
+# Fit a mixed-effects model for RT with Expt, cond_level, and their interaction
+library(lme4)
+model <- lmer(mean_RT ~ Expt * cond_level + (1 | subID), data = mean_RT)
+
+# Perform ANOVA on the mixed-effects model
+anova_results <- anova(model)
+print(anova_results)
+# Calculate partial eta squared for the mixed model
+eta_squared_results <- eta_squared(model, partial = TRUE)
+print(eta_squared_results)
+
+
+# Calculate estimated marginal means for Expt and cond_level
+emm <- emmeans(model, ~ Expt * cond_level)
+# Perform pairwise comparisons
+pairwise_results <- contrast(emm, interaction = "pairwise", adjust = "bonferroni")
+pairwise_results_table <- as.data.frame(summary(pairwise_results))
+
+# Calculate Cohen's d for each pairwise comparison
+pairwise_results_table <- pairwise_results_table %>%
+  mutate(
+    SD_diff = SE * sqrt(df),  # Approximate SD from SE and df
+    Cohens_d = estimate / SD_diff
+  )
+
+# Print results
+print(pairwise_results_table)
+
+# Perform pairwise comparisons for main effects and interactions
+# Pairwise comparisons for Expt
+expt_comparisons <- contrast(emmeans(model, ~ Expt), method = "pairwise", adjust = "bonferroni")
+print(expt_comparisons)
+expt_d <- cohens_d(mean_RT ~ Expt, data = mean_RT)
+print(expt_d)
+
+
+# Pairwise comparisons for cond_level
+cond_level_comparisons <- contrast(emmeans(model, ~ cond_level), method = "pairwise", adjust = "bonferroni")
+print(cond_level_comparisons)
+# Load necessary package
+library(effectsize)
+
+# Calculate Cohen's d for each pairwise comparison in cond_level
+# 1. Common vs. Unique
+data_common_unique <- subset(mean_RT, cond_level %in% c("common", "unique"))
+common_unique_d <- cohens_d(mean_RT ~ cond_level, data = data_common_unique)
+
+# 2. Common vs. Neutral
+data_common_neutral <- subset(mean_RT, cond_level %in% c("common", "neutral"))
+common_neutral_d <- cohens_d(mean_RT ~ cond_level, data = data_common_neutral)
+
+# 3. Unique vs. Neutral
+data_unique_neutral <- subset(mean_RT, cond_level %in% c("unique", "neutral"))
+unique_neutral_d <- cohens_d(mean_RT ~ cond_level, data = data_unique_neutral)
+
+# Combine results into a data frame for easy viewing
+cohen_d_results <- data.frame(
+  Comparison = c("Common vs Unique", "Common vs Neutral", "Unique vs Neutral"),
+  Cohens_d = c(common_unique_d$Cohens_d, common_neutral_d$Cohens_d, unique_neutral_d$Cohens_d),
+  CI_lower = c(common_unique_d$CI_low, common_neutral_d$CI_low, unique_neutral_d$CI_low),
+  CI_upper = c(common_unique_d$CI_high, common_neutral_d$CI_high, unique_neutral_d$CI_high)
+)
+
+print(cohen_d_results)
+
+
+
+
+
+
+
+```
+
+# Visualization of cross experiment comparison
+```{r RT bar}
+cbp1a <- c("coral3","darkgray", "darkolivegreen3", "#F0B670", "#F8AA2C", "#D27E08",
+          "#DD8F6B", "#F2AB6F") 
+## Calculates mean, sd, se and IC
+ rtsummary1a <- df1a %>%
+   group_by(cond_level) %>%
+   filter(correct == 1) %>%
+   summarise(
+     n = n(),
+     sd = sd(RT, na.rm = TRUE),
+     rt = mean(RT)
+   )%>%
+   mutate(se=sd/sqrt(n))  %>%
+   mutate(ci=se * qt((1-0.05)/2 + .5, n-1)) %>%
+   mutate(transrt = rt-600)
+ 
+rtbar1a = ggplot(data = rtsummary1a, aes(x = cond_level, y = transrt, fill = cond_level)) + 
+  #facet_wrap(~cond_level,
+             #strip.position = "bottom")  +
+  ylab(NULL)+ 
+   geom_bar(stat="identity", color="black", width = 0.8,
+           position=position_dodge()) +
+  geom_errorbar(aes(ymin=transrt-ci, ymax=transrt+ci), width=.3, linewidth = 0.5,
+                position=position_dodge(.5))+ 
+  scale_y_continuous(limits = c(0,400), breaks=seq(0,400,50),
+                     labels=seq(600,1000,50))+
+  theme_classic() + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        strip.text.y = element_text(size = 17, face = "bold"))+
+  scale_fill_manual(values = cbp1a)+
+  theme(axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.text.y = element_text(face = "bold", size = 15),
+        axis.ticks.x = element_blank(),
+        strip.text.x = element_text(size = 12, face = "bold")) + 
+  theme(legend.position = c(0.65, 0.93), legend.text = element_text(size = 11, face = "bold"), 
+        legend.direction = "vertical", 
+        legend.spacing = unit(0.3, "cm"), 
+        legend.key.height = unit(0.6, "cm"),
+        legend.key.width = unit(0.4, "cm"),legend.key.size = unit(1, "cm")) +
+  theme(plot.title = element_text(size = 19, face = "bold", hjust = 0.5)) +
+  theme(axis.title.y = element_text(size = 17, face = "bold", margin = margin(r = 5))) +
+  theme(strip.background = element_blank(), strip.placement = "outside", strip.switch.pad.grid = unit(0, "lines"))+
+  ylab("Reaction Time in 1a (ms)")+
+  labs(fill = "");rtbar1a
+
+
+ rtsummary1b <- df1b %>%
+   group_by(cond_level) %>%
+   filter(cond_level == "common" | cond_level == "unique" | cond_level == "neutral") %>%
+   filter(correct == 1) %>%
+   summarise(
+     n = n(),
+     sd = sd(RT, na.rm = TRUE),
+     rt = mean(RT)
+   )%>%
+   mutate(se=sd/sqrt(n))  %>%
+   mutate(ci=se * qt((1-0.05)/2 + .5, n-1)) %>%
+   mutate(transrt = rt-600)
+ 
+rtbar1b = ggplot(data = rtsummary1b, aes(x = cond_level, y = transrt, fill = cond_level)) + 
+  #facet_wrap(~cond_level,
+             #strip.position = "bottom")  +
+  ylab(NULL)+ 
+   geom_bar(stat="identity", color="black", width = 0.8,
+           position=position_dodge()) +
+  geom_errorbar(aes(ymin=transrt-ci, ymax=transrt+ci), width=.3, linewidth = 0.5,
+                position=position_dodge(.5))+ 
+  scale_y_continuous(limits = c(0,400), breaks=seq(0,400,50),
+                     labels=seq(600,1000,50))+
+  theme_classic() + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        strip.text.y = element_text(size = 17, face = "bold"))+
+  scale_fill_manual(values = cbp1a)+
+  theme(axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.text.y = element_text(face = "bold", size = 15),
+        axis.ticks.x = element_blank(),
+        strip.text.x = element_text(size = 12, face = "bold")) + 
+  theme(legend.position = c(0.65, 0.93), legend.text = element_text(size = 11, face = "bold"), 
+        legend.direction = "vertical", 
+        legend.spacing = unit(0.3, "cm"), 
+        legend.key.height = unit(0.6, "cm"),
+        legend.key.width = unit(0.4, "cm"),legend.key.size = unit(1, "cm")) +
+  theme(plot.title = element_text(size = 19, face = "bold", hjust = 0.5)) +
+  theme(axis.title.y = element_text(size = 17, face = "bold", margin = margin(r = 5))) +
+  theme(strip.background = element_blank(), strip.placement = "outside", strip.switch.pad.grid = unit(0, "lines"))+
+  ylab("Reaction Time in 1b (ms)")+
+  labs(fill = "");rtbar1b
+
+bindbar = plot_grid(rtbar1a, rtbar1b, labels = "AUTO")
+bindbar
+```
+
+```{r}
+################## Xinger code
+two.way3 <- df %>%
+  group_by(Expt, subID, trial_struc) %>%
+  summarise(acc = mean(correct), .groups = "drop") %>%
+  ungroup()
+
+anova_results <- anova_test(data = two.way3, formula = acc ~ trial_struc * Expt + Error(subID / (trial_struc * Expt)),effect.size = "pes")
+
+```
+
+```{r failed}
+# for RT
+one.way2 <- df %>% 
+  filter(correct == 1) %>%
+  #filter(trial_struc != "target repeat" & trial_struc != "rest") %>%
+  group_by(Expt, subID, trial_struc)%>%
+  summarise(rt = mean(RT), .groups = "drop") %>%
+  ungroup() %>%
+  aov_car(data = ., formula = rt ~ trial_struc*Expt + Error(subID / trial_struc*Expt))
+summary(one.way2)
+# finally, calculate the effect size
+effectsize::eta_squared(one.way2, partial = TRUE)
+
+###### Post-hoc
+library(emmeans)
+# Perform pairwise comparisons
+pairwise_results <- emmeans(one.way2, pairwise ~ cond_level)
+summary(pairwise_results$contrasts)
+
+# Show descriptive stats
+search %>% 
+  filter(correct == 1) %>%
+  group_by(cond_level)%>%
+  summarise(Mean = mean(RT), SD = sd(RT))
+
+
+# Calculate Cohen's d
+# not yet used
+
+library(dplyr)
+library(effsize)
+
+# Calculate Cohen's d for each pairwise comparison
+data = search %>% 
+  filter(correct == 1)
+conditions <- unique(data$cond_level)
+pairwise_cohens_d <- combn(conditions, 2, function(x) {
+  group1 <- data %>% filter(cond_level == x[1])
+  group2 <- data %>% filter(cond_level == x[2])
+  d <- cohen.d(group1$RT, group2$RT)
+  return(data.frame(condition1 = x[1], condition2 = x[2], cohens_d = d$estimate))
+}, simplify = FALSE)
+
+# Convert to data frame
+pairwise_cohens_d_df <- do.call(rbind, pairwise_cohens_d)
+print(pairwise_cohens_d_df)
+
+
+
+```
+
+```{r check interference effect?}
+library(dplyr)
+library(tidyr)
+
+# Assuming your data frame is named `data` and has columns: subID, cond_level, RT
+
+# Step 1: Calculate mean RT for each condition for each participant
+mean_rt <- data %>%
+  filter(correct == 1) %>%
+  group_by(subID, cond_level) %>%
+  summarise(mean_RT = mean(RT, na.rm = TRUE)) %>%
+  ungroup() %>%
+  pivot_wider(names_from = cond_level, values_from = mean_RT)
+
+# Step 2: Calculate the interference effect
+# Interference Effect = (RT_common - RT_neutral) / (RT_common + RT_neutral)
+mean_rt <- mean_rt %>%
+  mutate(interference = (common - neutral) / (common + neutral)) %>%
+  mutate(experiment = "1a")
+
+# Display the results
+print(mean_rt)
+
+# save the interference data
+write.csv(mean_rt, "df_interference_1a.csv")
+```
+
+# calculate 1b common vs. unique
+```{r cross expt comparison}
+# t-test is between exp 1a vs 1b. The DV is (unique minus common)
+
+# Step 1: Calculate mean RT for each condition for each participant
+mean_rt <- df %>%
+  filter(correct == 1) %>%
+  group_by(subID, Expt, trial_struc) %>%
+  summarise(mean_RT = mean(RT, na.rm = TRUE)) %>%
+  ungroup() %>%
+  pivot_wider(names_from = trial_struc, values_from = mean_RT)
+
+
+# Step 2: Calculate the difference
+difference <- mean_rt %>%
+  mutate(difference = (common - unique),"none")
+
+# seperated df for t-test
+group1 = difference %>% filter(Expt == "1a")
+group2 = difference %>% filter(Expt == "1b")
+
+# Perform t-test
+group1$difference = as.numeric(group1$difference)
+group2$difference = as.numeric(group2$difference)
+
+t_test_result <- t.test(group1$difference, group2$difference)
+# Calculate the means and pooled standard deviation
+mean_diff1 <- mean(group1$difference, na.rm = TRUE)
+mean_diff2 <- mean(group2$difference, na.rm = TRUE)
+sd_pooled <- sqrt(((length(group1$difference) - 1) * var(group1$difference, na.rm = TRUE) +
+                   (length(group2$difference) - 1) * var(group2$difference, na.rm = TRUE)) /
+                  (length(group1$difference) + length(group2$difference) - 2))
+
+# Calculate Cohen's d = -0.02151772
+cohen_d_diff <- (mean_diff1 - mean_diff2) / sd_pooled
+cohen_d_diff
+
+t.test(group1$common, group1$unique)
+# Calculate the mean difference and standard deviation of the differences
+mean_diff_group1 <- mean(group1$common - group1$unique, na.rm = TRUE)
+sd_diff_group1 <- sd(group1$common - group1$unique, na.rm = TRUE)
+
+# Calculate Cohen's d for paired samples d= 0.2296327
+cohen_d_group1 <- mean_diff_group1 / sd_diff_group1
+cohen_d_group1
+
+t.test(group2$common, group2$unique)
+# Calculate the mean difference and standard deviation of the differences
+mean_diff_group2 <- mean(group2$common - group2$unique, na.rm = TRUE)
+sd_diff_group2 <- sd(group2$common - group2$unique, na.rm = TRUE)
+
+# Calculate Cohen's d for paired samples d = 0.3488704
+cohen_d_group2 <- mean_diff_group2 / sd_diff_group2
+cohen_d_group2
+
+
+t_test_result
+```
+
+```{r visualization}
+library(ggplot2)
+library(dplyr)
+
+# Summarize and preprocess the data
+rtsummary <- tf %>%
+   group_by(Expt, cond_level) %>%
+   summarise(
+     n = n(),
+     sd = sd(RT, na.rm = TRUE),
+     rt = mean(RT)
+   ) %>%
+   mutate(
+     se = sd / sqrt(n),
+     ci = se * qt((1 - 0.05) / 2 + .5, n - 1),
+     transrt = rt - 600
+   )
+
+
+# Define the color palette for the experiment and condition combinations
+cpb1abcompare <- c("common.1a" = "coral3", 
+                   "common.1b" = "coral3", 
+                   "unique.1a" = "darkolivegreen3", 
+                   "unique.1b" = "darkolivegreen3",
+                   "neutral.1a" = "darkgray",
+                   "neutral.1b" = "darkgray")
+
+cpb1abcompare_v2 <- c("common.1a" = "coral3", 
+                   "common.1b" = "#f0b8ab", 
+                   "unique.1a" = "darkolivegreen3", 
+                   "unique.1b" = "olivedrab2",
+                   "neutral.1a" = "darkgray",
+                   "neutral.1b" = "lightgray")
+# Ensure the levels of cond_level are in the desired order
+rtsummary$cond_level <- factor(rtsummary$cond_level, levels = c("common", "neutral", "unique"))
+
+# Create the plot
+rtbar1ab <- ggplot(data = rtsummary, aes(x = Expt, y = transrt, fill = interaction(cond_level, Expt))) +
+  geom_bar(stat = "identity", color = "black", width = 0.8, position = position_dodge(0.8)) +
+  geom_errorbar(aes(ymin = transrt - se, ymax = transrt + se), width = 0.3, linewidth = 0.5, position = position_dodge(0.8)) + 
+  scale_y_continuous(limits = c(0, 400), breaks = seq(0, 400, 50), labels = seq(600, 1000, 50)) +
+  scale_fill_manual(values = cpb1abcompare) +
+  labs(y = "Reaction Time (ms)", fill = "") +
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(face = "bold", size = 12),
+    axis.title.x = element_blank(),
+    axis.text.y = element_text(face = "bold", size = 15),
+    axis.ticks.x = element_blank(),
+    #legend.position = "none",
+    plot.title = element_text(size = 19, face = "bold", hjust = 0.5),
+    axis.title.y = element_text(size = 17, face = "bold", margin = margin(r = 5)),
+    strip.background = element_blank()
+  )
+
+# Display the plot
+rtbar1ab
+
+
+
+```
+
+# Within expt comparison
+```{r}
+# compare1b without abd with ANOVA
+# create df for analysis
+with = X1atrialRemoval %>% 
+  dplyr::select(`subID...47`, cond_target, cond_level, RT, correct, target, prime) %>%
+  mutate(present = "with target repeat")
+
+without = X1atrialRemoval %>% 
+  filter(prime != "target repeat") %>%
+  dplyr::select(`subID...47`, cond_target, cond_level, RT, correct, target, prime) %>%
+  mutate(present = "without target repeat")
+
+compare1a = rbind(with, without)
+#write.csv(compare1a, "compare1a_2.csv")
+
+### transform variables into factors
+compare1a$`subID...47` = as.factor(compare1a$`subID...47`)
+compare1a$cond_level = as.factor(compare1a$cond_level)
+compare1a$present = as.factor(compare1a$present)
+
+# one way ANOVA for critical distractor with participant as random factor.
+two.way2 <- compare1a %>% 
+  filter(correct == 1) %>%
+  group_by(`subID...47`, cond_level, present) %>%
+  summarise(rt = mean(RT)) %>%
+  aov_car(data = ., formula = rt ~ cond_level*present + Error(`subID...47` / (cond_level*present)))
+summary(two.way2)
+
+##### Post-hoc needed for RT
+
+# Perform pairwise comparisons for 'cond_level'
+pairwise_results_repetition <- emmeans(two.way2, pairwise ~ cond_level)
+summary_repetition <- summary(pairwise_results_repetition$contrasts)
+
+# Perform pairwise comparisons for 'present'
+pairwise_results_present <- emmeans(two.way2, pairwise ~ present)
+summary_present <- summary(pairwise_results_present$contrasts)
+
+
+# Perform pairwise comparisons for the interaction
+pairwise_results_interaction <- emmeans(two.way2, pairwise ~ cond_level * present)
+summary_interaction <- summary(pairwise_results_interaction$contrasts)
+
+# Calculate Cohen's d for each pairwise comparison of 'repetition'
+conditions_repetition <- unique(compare1a$cond_level)
+pairwise_cohens_d_repetition <- combn(conditions_repetition, 2, function(x) {
+  group1 <- compare1a %>% filter(cond_level == x[1])
+  group2 <- compare1a %>% filter(cond_level == x[2])
+  d <- cohen.d(group1$RT, group2$RT)
+  return(data.frame(condition1 = x[1], condition2 = x[2], cohens_d = d$estimate))
+}, simplify = FALSE)
+
+# Convert to data frame
+pairwise_cohens_d_repetition_df <- do.call(rbind, pairwise_cohens_d_repetition)
+print(pairwise_cohens_d_repetition_df)
+
+# Calculate Cohen's d for each pairwise comparison of 'present'
+conditions_present <- unique(compare1a$present)
+pairwise_cohens_d_present <- combn(conditions_present, 2, function(x) {
+  group1 <- compare1a %>% filter(present == x[1])
+  group2 <- compare1a %>% filter(present == x[2])
+  d <- cohen.d(group1$RT, group2$RT)
+  return(data.frame(condition1 = x[1], condition2 = x[2], cohens_d = d$estimate))
+}, simplify = FALSE)
+
+# Convert to data frame
+pairwise_cohens_d_present_df <- do.call(rbind, pairwise_cohens_d_present)
+print(pairwise_cohens_d_present_df)
+
+
+
+
+
+
+
+############# Graph
+
+# Define the color panel with 6 different colors
+cpb1acompare <- c("with target repeat.neutral" = "#3d5c6f", 
+                  "without target repeat.neutral" = "#9daeb6",
+                  "with target repeat.unique" = "#e47159", 
+                  "without target repeat.unique" = "#f0b8ab", 
+                  "with target repeat.common" = "#f9ae78", 
+                  "without target repeat.common" = "#f9d8b9")
+
+# Calculate mean, sd, se, and IC
+rtsummary1a <- compare1a %>%
+  filter(correct == 1) %>%
+  group_by(present, cond_level) %>%
+  summarise(
+    n = n(),
+    sd = sd(RT, na.rm = TRUE),
+    rt = mean(RT)
+  ) %>%
+  mutate(se = sd / sqrt(n)) %>%
+  mutate(ci = se * qt((1 - 0.05) / 2 + .5, n - 1)) %>%
+  mutate(transrt = rt - 600)
+
+# Convert cond_level to a factor with the desired order
+rtsummary1a <- rtsummary1a %>%
+  mutate(cond_level = factor(cond_level, levels = c("neutral", "unique", "common")))
+
+# Create the plot
+rtbar1a <- ggplot(data = rtsummary1a, aes(x = cond_level, y = transrt, fill = interaction(present, cond_level))) +
+  ylab(NULL) + 
+  geom_bar(stat = "identity", color = "black", width = 0.8, position = position_dodge(0.8)) +
+  geom_errorbar(aes(ymin = transrt - se, ymax = transrt + se), width = .3, linewidth = 0.5, position = position_dodge(0.8)) + 
+  scale_y_continuous(limits = c(0, 400), breaks = seq(0, 400, 80), labels = seq(600, 1000, 80)) +
+  theme_classic() + 
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    strip.text.y = element_text(size = 17, face = "bold")
+  ) +
+  scale_fill_manual(values = cpb1acompare) +
+  theme(
+    axis.text.x = element_text(face = "bold", size = 12),
+    axis.title.x = element_blank(),
+    axis.text.y = element_text(face = "bold", size = 15),
+    axis.ticks.x = element_blank(),
+    strip.text.x = element_text(size = 12, face = "bold")
+  ) + 
+  theme(
+    legend.position = "none") +
+  theme(
+    plot.title = element_text(size = 19, face = "bold", hjust = 0.5),
+    axis.title.y = element_text(size = 17, face = "bold", margin = margin(r = 5)),
+    strip.background = element_blank(),
+    strip.placement = "outside",
+    strip.switch.pad.grid = unit(0, "lines")
+  ) +
+  ylab("Reaction Time (ms)") +
+  labs(fill = "");rtbar1a
+
+
+#ggsave("targetcompare1b.jpeg", rtbar1b,device = "jpeg")
+```
+
+```{r stats for why collapse targets}
+collapse = data %>%
+  mutate(colors = ifelse(cond_target == "Target1" & cond_level == "blue", "color1",
+                  ifelse(cond_target == "Target1" & cond_level == "red", "color2",  
+                  ifelse(cond_target == "Target2" & cond_level == "yellow", "color1",
+                  ifelse(cond_target == "Target2" & cond_level == "red", "color2", 
+                  ifelse(cond_target == "Target3" & cond_level == "blue", "color1",
+                  ifelse(cond_target == "Target3" & cond_level == "yellow", "color2", "neutral")))))))
+collapse$subID = as.factor(collapse$subID)
+collapse$cond_target = as.factor(collapse$cond_target)
+collapse$colors = as.factor(collapse$colors)
+
+# Filter data to only include correct responses
+my_data <- collapse %>%
+  filter(correct == 1)
+
+# Set 'neutral' as the baseline for 'colors' by reordering factor levels
+my_data$colors <- factor(my_data$colors, levels = c("neutral", "color1", "color2"))
+
+# Load `lme4` for linear mixed-effects modeling
+library(lme4)
+
+# Run the linear mixed-effects model
+model <- lmer(RT ~ colors * cond_target + (1 | subID), data = my_data)
+
+# Display summary and ANOVA for the model
+summary(model)
+anova(model)
+
+# Post-hoc comparisons for colors
+posthoc_colors <- emmeans(model, pairwise ~ colors)
+
+# Post-hoc comparisons for cond_target
+posthoc_target <- emmeans(model, pairwise ~ cond_target)
+
+# Post-hoc comparisons for the interaction
+posthoc_interaction <- emmeans(model, pairwise ~ colors * cond_target)
+
+# Display results
+summary(posthoc_colors)
+summary(posthoc_target)
+summary(posthoc_interaction)
+
+# one way ANOVA checcking target collapse
+# Fit the model
+# Run one-way ANOVA with `subID` as a random factor
+model_oneway <- aov(RT ~ cond_level + Error(subID), data = my_data)
+
+# Display ANOVA results
+summary(model_oneway)
+# Get eta-squared for cond_level
+eta_squared_value <- effectsize::eta_squared((summary(model_oneway)))
+print(eta_squared_value)
+```
+
+```{r interaction between distractor color: cond_level and the condition: trial_struc??}
+# Load necessary library
+library(dplyr)
+library(lme4)
+
+# Step 1: Aggregate data to get average RT for each subID in each cond_level and target combination
+# Replace `RT` with the name of your response variable
+aggregated_data <- collapse %>%
+
+  group_by(subID, colors, cond_target) %>%
+  summarise(average_RT = mean(RT, na.rm = TRUE), .groups = 'drop')
+
+# Step 2: Run ANOVA with subID as a random factor, and cond_level and target as fixed factors
+# Using a linear mixed-effects model to handle the structure of random and fixed effects
+model <- lmer(average_RT ~ colors * cond_target + (1 | subID), data = aggregated_data)
+
+# Display model summary and ANOVA table
+summary(model)
+anova(model)
+
+# Post-hoc for cond_level
+posthoc_cond_level <- emmeans(model, pairwise ~ colors)
+
+# Post-hoc for target
+posthoc_target <- emmeans(model, pairwise ~ cond_target)
+
+# Post-hoc for interaction between cond_level and target
+posthoc_interaction <- emmeans(model, pairwise ~ colors * cond_target)
+
+# Display results
+summary(posthoc_cond_level)
+summary(posthoc_target)
+summary(posthoc_interaction)
+
+# Load necessary libraries
+library(emmeans)
+library(effectsize)
+
+# Assuming `posthoc_interaction` contains the pairwise comparisons
+posthoc_interaction <- emmeans(model, pairwise ~ colors * cond_target)
+
+# Extract the summary of pairwise contrasts
+contrasts <- summary(posthoc_interaction)$contrasts
+
+# Calculate Cohen's d for each pairwise comparison
+effect_sizes <- contrasts %>%
+  mutate(cohen_d = estimate / SE)
+
+# Display effect sizes for each contrast
+print(effect_sizes)
+
+```
+
+
+```{r wide data}
+wide_data <- searchdf_1b %>%
+  filter(correct == 1) %>%
+  group_by(subID, cond_level, cond_target) %>%
+  summarise(mean_rt = mean(RT), .groups = "drop") %>%
+  mutate(interaction_name = paste(cond_level, cond_target, sep = "_")) %>%
+  pivot_wider(names_from = interaction_name, values_from = mean_rt) %>%
+  dplyr::select(-cond_level, -cond_target)
+
+wide_data <- searchdf_1b %>%
+  filter(correct == 1) %>%
+  group_by(subID,cond_level, cond_target) %>%
+  summarise(mean_rt = mean(RT), .groups = "drop") %>%
+  ungroup()%>%
+  mutate(interaction_name = paste(cond_level, cond_target, sep = "_")) %>%
+  dplyr::select(-cond_level, -cond_target) %>%
+  pivot_wider(names_from = interaction_name, values_from = mean_rt, values_fill = NA)  # Fill missing values with NA
+
+
+
+
+```
