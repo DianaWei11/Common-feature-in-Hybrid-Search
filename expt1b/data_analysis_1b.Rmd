@@ -793,58 +793,8 @@ anova_results <- anova_test(data = two.way3, formula = acc ~ trial_struc * Expt 
 
 ```
 
-```{r failed}
-# for RT
-one.way2 <- df %>% 
-  filter(correct == 1) %>%
-  #filter(trial_struc != "target repeat" & trial_struc != "rest") %>%
-  group_by(Expt, subID, trial_struc)%>%
-  summarise(rt = mean(RT), .groups = "drop") %>%
-  ungroup() %>%
-  aov_car(data = ., formula = rt ~ trial_struc*Expt + Error(subID / trial_struc*Expt))
-summary(one.way2)
-# finally, calculate the effect size
-effectsize::eta_squared(one.way2, partial = TRUE)
 
-###### Post-hoc
-library(emmeans)
-# Perform pairwise comparisons
-pairwise_results <- emmeans(one.way2, pairwise ~ cond_level)
-summary(pairwise_results$contrasts)
-
-# Show descriptive stats
-search %>% 
-  filter(correct == 1) %>%
-  group_by(cond_level)%>%
-  summarise(Mean = mean(RT), SD = sd(RT))
-
-
-# Calculate Cohen's d
-# not yet used
-
-library(dplyr)
-library(effsize)
-
-# Calculate Cohen's d for each pairwise comparison
-data = search %>% 
-  filter(correct == 1)
-conditions <- unique(data$cond_level)
-pairwise_cohens_d <- combn(conditions, 2, function(x) {
-  group1 <- data %>% filter(cond_level == x[1])
-  group2 <- data %>% filter(cond_level == x[2])
-  d <- cohen.d(group1$RT, group2$RT)
-  return(data.frame(condition1 = x[1], condition2 = x[2], cohens_d = d$estimate))
-}, simplify = FALSE)
-
-# Convert to data frame
-pairwise_cohens_d_df <- do.call(rbind, pairwise_cohens_d)
-print(pairwise_cohens_d_df)
-
-
-
-```
-
-```{r check interference effect?}
+```{r check interference effect}
 library(dplyr)
 library(tidyr)
 
@@ -1131,7 +1081,7 @@ rtbar1a <- ggplot(data = rtsummary1a, aes(x = cond_level, y = transrt, fill = in
 #ggsave("targetcompare1b.jpeg", rtbar1b,device = "jpeg")
 ```
 
-```{r stats for why collapse targets}
+```{r stats for collapse targets}
 collapse = data %>%
   mutate(colors = ifelse(cond_target == "Target1" & cond_level == "blue", "color1",
                   ifelse(cond_target == "Target1" & cond_level == "red", "color2",  
@@ -1186,7 +1136,7 @@ eta_squared_value <- effectsize::eta_squared((summary(model_oneway)))
 print(eta_squared_value)
 ```
 
-```{r interaction between distractor color: cond_level and the condition: trial_struc??}
+```{r interaction between distractor color: cond_level and the condition: trial_struc}
 # Load necessary library
 library(dplyr)
 library(lme4)
