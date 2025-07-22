@@ -1,0 +1,283 @@
+---
+title: "Red"
+author: "Diana Wei"
+date: "2023-04-20"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(readxl)
+library(Matrix)
+library(data.table)
+library(readxl)
+library(tidyverse)
+library(Matrix)
+library(data.table)
+library("reshape") 
+library(readxl)
+library(readxl)
+library(tidyverse)
+library(Matrix)
+library(data.table)
+library(DescTools)
+library(car)
+library(ggpubr)
+require(gridExtra)
+library(Matrix)
+library(data.table)
+library(hrbrthemes)
+library(lme4)
+require("rstatix")
+library("afex")
+library(sjstats)
+library("rmcorr")
+library(multcomp)
+require("maxLik")
+library(scales)
+library(Hmisc)
+library(cowplot)
+library(viridis)
+library(afex)
+#library(heplots)
+library(effectsize)
+
+# dir need to change
+#setwd("~/Library/CloudStorage/Box-Box/Honor Thesis/Common-Unique")
+#mydir = "~/Library/CloudStorage/Box-Box/Honor Thesis/Common-Unique/Red Common/pilot"
+```
+
+```{r import all files from that directory}
+library(tidyverse)
+
+# Step 1: List the files you want to read
+files <- list.files(pattern = '520425|400394|124985')
+
+# Step 2: Read and combine the files (skip first 3 lines and use the 4th as header)
+df_list <- lapply(files, function(x) {
+  df <- read.csv(x, skip = 3, header = TRUE)
+  df$rowNo <- as.character(df$rowNo)  # Ensure consistent type
+  return(df)
+})
+
+# Step 3: Combine all data frames
+combined <- bind_rows(df_list)
+
+# Step 4: only focus on search task
+Search_df = combined %>%
+  group_by(tasks) %>% 
+  filter (tasks == "search")
+id = data.frame(subID = rep(1:319,each = 180)) # create a new df with name id
+Search_with_ID_df = cbind(Search_df,id)
+
+lowacc = Search_with_ID_df %>%
+  group_by(subID) %>% 
+  mutate(accuracy = mean(correct)) %>% 
+  mutate(lowAcc = ifelse(accuracy < 0.50, "chance performance", "passed"))%>% filter(lowAcc == "chance performance")
+lowID = unique(lowacc$subID)
+df_acc_remove = df %>% filter(!subID %in% lowID) # create df for accuracy passed participants.
+
+data = df_acc_remove # now data is low acc removed
+
+```
+
+```{r assign subID}
+# rep need change
+id = data.frame(subID = rep(1:22,each = 229)) # create a new df with name id
+df = cbind(my_data_frame,id) # combined two df to assign subID
+```
+
+```{r remove low acc participants}
+lowacc = df %>%
+  group_by(subID,tasks) %>% 
+  mutate(accuracy = mean(correct)) %>% 
+  mutate(lowAcc = ifelse(tasks == "search" & accuracy < 0.75, "bad ACC", "passed"))%>% filter(lowAcc == "bad ACC")
+lowID = unique(lowacc$subID)
+df_acc_remove = df %>% filter(!subID %in% lowID) # create df for accuracy passed participants.
+
+data = df_acc_remove # now data is low acc removed
+```
+
+```{r RT criteria}
+df_time= df_acc_remove %>%
+        mutate(cond = 
+        ifelse(tasks == "search" & RT > 3000, "time out",
+        ifelse(tasks == "search" & RT < 250, "too fast","in time")))
+
+df_intime = df_time %>% filter(cond == "in time")
+
+
+findoutlier <- function(x) {
+  return(x < quantile(x, .25) - 3*IQR(x) | x > quantile(x, .75) + 3*IQR(x))
+}
+
+df_findoutlier <- df_intime %>%
+        group_by(cond_target, cond_level) %>% #find outlier for each 3*3 condition
+        mutate(outlier = ifelse(findoutlier(RT), RT, NA))
+
+df_no_oulier = df_findoutlier %>% dplyr::select(tasks, stim1, stim2, stim3, stim4, cond_target, cond_level, RT, correct, subID, cond, outlier) %>% 
+  filter(is.na(outlier) == T)%>%
+  filter(cond == "in time") 
+
+# data loss
+#(22512-21740)/22512
+```
+
+```{r check insufficient trial participants}
+180*0.7 # <126 will be insufficient trials
+suf_searchtrials = df_no_oulier %>% filter(tasks == "search") %>%
+  group_by(subID) %>% dplyr::summarise(n = n()) %>%
+  filter(n>=126)
+sufID = unique(suf_searchtrials$subID)
+df_insuf_remove = df_no_oulier %>% filter(subID %in% sufID)
+data = df_insuf_remove
+```
+######################### DATA ANALYSIS ##############################
+
+############# Training Data
+```{r traing data}
+train = data %>% 
+  filter(tasks == "training") %>% group_by(subID, cond_level) %>%
+  mutate(acc = mean(correct)) %>%
+  mutate(rt = mean(RT))
+
+train %>%
+  group_by(cond_level) %>% summarise(mean(rt), sd(rt),mean(acc), sd(acc))
+```
+
+############# Search Data
+
+```{r summary stats}
+# remember to as.factor! very important!!!!!!
+data$cond_target = as.factor(data$cond_target)
+data$cond_level = as.factor(data$cond_level)
+data$subID = as.factor(data$subID)
+search = data %>% 
+  filter(tasks == "search")
+searchRT = search %>% filter(correct == 1)
+search %>% group_by(cond_level, cond_target)%>%
+  summarise(accuracy = mean(correct))
+searchRT %>% group_by(cond_level, cond_target)%>%
+  summarise(RT = mean(RT))
+```
+
+```{r two way}
+two.way1 <- search %>%
+  group_by(subID, cond_level, cond_target)%>%
+  summarise(accuracy = mean(correct)) %>%
+  aov_car(data = ., formula = accuracy ~ cond_level * cond_target + Error(subID / (cond_level * cond_target)))
+summary(two.way1)
+
+two.way2 <- searchRT %>%
+  group_by(subID, cond_level, cond_target) %>%
+  summarise(rt = mean(RT)) %>%
+  aov_car(data = ., formula = rt ~ cond_level * cond_target + Error(subID / (cond_level * cond_target)))
+summary(two.way2)
+effect_size2 <- eta_squared(two.way2)
+print(effect_size2)
+# Eta2 (partial) for cond_level = 0.74
+```
+
+```{r post-hoc}
+# post hoc comparison
+TukeyHSD(aov(RT ~ cond_level, data = searchRT))
+#TukeyHSD(aov(acc ~ cond_level, data = search))
+```
+
+################## Graph ##################################
+```{r RT bar}
+cbp1 <- c("#DBC079","#BE5B06", "#CB7B58", "#F0B670", "#F8AA2C", "#D27E08",
+          "#DD8F6B", "#F2AB6F") 
+## Calculates mean, sd, se and IC
+ rtsummary <- searchRT %>%
+   group_by(cond_level, cond_target) %>%
+   summarise(
+     n = n(),
+     sd = sd(RT, na.rm = TRUE),
+     rt = mean(RT)
+   )%>%
+   mutate(se=sd/sqrt(n))  %>%
+   mutate(ci=se * qt((1-0.05)/2 + .5, n-1)) %>%
+   mutate(transrt = rt*0.5) %>%
+   mutate(transCI = ci*0.5)
+ 
+rtbar = ggplot(data = rtsummary, aes(x = cond_level, y = rt, fill = cond_level)) + 
+  facet_wrap(~cond_target,
+             strip.position = "bottom")  +
+  ylab(NULL)+ 
+   geom_bar(stat="identity", color="black", width = 0.8,
+           position=position_dodge()) +
+  geom_errorbar(aes(ymin=rt-ci, ymax=rt+ci), width=.3, size = 0.5,
+                position=position_dodge(.5))+ 
+  scale_y_continuous(limits = c(0,1100))+#, breaks=seq(0,600,200),
+                     #labels=seq(0,600,200))+
+  theme_classic() + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        strip.text.y = element_text(size = 17, face = "bold"))+
+  scale_fill_manual(values = cbp1)+
+  theme(axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.text.y = element_text(face = "bold", size = 15),
+        axis.ticks.x = element_blank(),
+        strip.text.x = element_text(size = 12, face = "bold")) + 
+  theme(legend.position = c(0.65, 0.93), legend.text = element_text(size = 11, face = "bold"), 
+        legend.direction = "horizontal", 
+        legend.spacing = unit(0.3, "cm"), 
+        legend.key.height = unit(0.6, "cm"),
+        legend.key.width = unit(0.4, "cm"),legend.key.size = unit(1, "cm")) +
+  theme(plot.title = element_text(size = 19, face = "bold", hjust = 0.5)) +
+  theme(axis.title.y = element_text(size = 17, face = "bold", margin = margin(r = 5))) +
+  theme(strip.background = element_blank(), strip.placement = "outside", strip.switch.pad.grid = unit(0, "lines"))+
+  ylab("Reaction Time (ms)")+
+  labs(fill = "")
+rtbar
+```
+
+```{r acc bargraph}
+accsummary <- search %>%
+  group_by(cond_level, cond_target) %>%
+  summarise(
+    n = n(),
+    sd = sd(correct, na.rm = TRUE),
+    acc = mean(correct)
+  )%>%
+  mutate(se=sd/sqrt(n))  %>%
+  mutate(ci=se * qt((1-0.05)/2 + .5, n-1)) %>%
+  mutate(transacc = acc - 0.7)
+
+# graph
+accbar = ggplot(data = accsummary, aes(x = cond_level, y = acc, fill = cond_level)) + 
+  facet_wrap(~cond_target,
+             strip.position = "bottom")  +
+  ylab(NULL)+ 
+   geom_bar(stat="identity", color="black", width = 0.8,
+           position=position_dodge()) +
+  geom_errorbar(aes(ymin=acc-ci, ymax=acc+ci), width=.3, size = 0.5,
+                position=position_dodge(.5))+ 
+  scale_y_continuous(limits = c(0,1.1))+#, breaks=seq(0,0.3,0.05),
+                     #labels=seq(0.7,1,0.05)) +
+  theme_classic() + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        strip.text.y = element_text(size = 17, face = "bold"))+
+  scale_fill_manual(values = cbp1) +
+  theme(axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.text.y = element_text(face = "bold", size = 15),
+        axis.ticks.x = element_blank(),
+        strip.text.x = element_text(size = 12, face = "bold")) + 
+  theme(legend.position = c(0.6, 0.8), legend.text = element_text(size = 11, face = "bold"), 
+        legend.title = element_text(size = 13, face = "bold"), legend.direction = "horizontal", 
+        legend.spacing = unit(0.5, "cm"), legend.key.width = unit(0.5, "cm"),
+        legend.key.size = unit(1, "cm")) +
+  theme(plot.title = element_text(size = 19, face = "bold", hjust = 0.5)) +
+  theme(axis.title.y = element_text(size = 17, face = "bold", margin = margin(r = 5))) +
+  theme(strip.background = element_blank(), strip.placement = "outside", strip.switch.pad.grid = unit(0, "lines"))+
+  ylab("Accuracy")+
+  labs(fill = "")+
+  theme(legend.position = "none", 
+          plot.title = element_blank())
+
+######### Bind RT and Acc together
+bindbar = plot_grid(rtbar, accbar, labels = "AUTO")
+bindbar
+```
