@@ -249,17 +249,19 @@ summary(one.way1)
 # finally, calculate the effect size
 effectsize::eta_squared(one.way1, partial = TRUE)
 
-# for RT
-two.way3 <- df_1b %>%
-  filter(tasks == "search") %>%
+# for RT, using anova_test
+two.way3 <- df %>%
+  filter(Expt == "1b") %>%
+  #filter(tasks == "search") %>%
   filter(correct == 1) %>%
-  filter(trial_struc != "target repeat") %>%
-  group_by(subID, trial_struc) %>%
+  filter(cond_level != "target repeat") %>%
+  group_by(subID, cond_level) %>%
   summarise(rt = mean(RT), .groups = "drop") %>%
   ungroup()
-anova_results <- anova_test(data = two.way3, formula = rt ~ trial_struc + Error(subID / (trial_struc)),
+anova_results <- anova_test(data = two.way3, formula = rt ~ cond_level + Error(subID / (cond_level)),
              effect.size = "pes")
 anova_table <- get_anova_table(anova_results, correction = "none")
+anova_table
 # Calculate Cohen's d for all pairwise comparisons of cond_level
 library(effectsize)
 
@@ -273,18 +275,46 @@ group_stats <- two.way3 %>%
     .groups = "drop"
   )
 
+# for RT, using lmer
+library(lme4)
+library(lmerTest)  # for p-values
+
+# Fit a linear mixed-effects model
+model <- lmer(rt ~ cond_level + (1 | subID), data = two.way3)
+# Perform ANOVA on the mixed-effects model
+anova_results <- anova(model)
+print(anova_results)
+# Calculate partial eta squared for the mixed model
+eta_squared_results <- eta_squared(model, partial = TRUE)
+print(eta_squared_results)
+
+
+library(emmeans)
+
+# Get estimated marginal means per experiment
+emm <- emmeans(model, pairwise ~ cond_level, adjust = "bonferroni")
+
+# Contrast unique vs common within each experiment
+summary(emm$contrasts)  # or use "bonferroni"
+
+
+
+# Get ANOVA table with Satterthwaite's method
+anova(model)
+
 
 ###### Post-hoc
 library(emmeans)
 # Perform pairwise comparisons to get t score and p value
 library(rstatix)
 
-two.way3 %>%
+pariwise_comparison = two.way3 %>%
   pairwise_t_test(
-    rt ~ trial_struc,
+    rt ~ cond_level,
     paired = TRUE,
     p.adjust.method = "bonferroni"
   )
+pariwise_comparison
 
 # cohen's d for RT
 # Aggregate RT by subID and cond_level
@@ -604,12 +634,15 @@ mean_RT <- df %>%
   group_by(subID, Expt, cond_level) %>%
   summarise(mean_RT = mean(RT, na.rm = TRUE)) %>%
   ungroup()
+mean_RT = mean_RT %>%
+  mutate(ID = ifelse(Expt == "1b", 500+subID, subID))
+mean_RT$ID = as.factor(mean_RT$ID)
 
 
 # cross exp comparison using mixed ANOVA model
 # Fit a mixed-effects model for RT with Expt, cond_level, and their interaction
 library(lme4)
-model <- lmer(mean_RT ~ Expt * cond_level + (1 | subID), data = mean_RT)
+model <- lmer(mean_RT ~ Expt * cond_level + (1 | ID), data = mean_RT)
 
 # Perform ANOVA on the mixed-effects model
 anova_results <- anova(model)
@@ -626,6 +659,12 @@ emm <- emmeans(model, ~ cond_level | Expt)
 
 # Contrast unique vs common within each experiment
 pairs(emm, adjust = "bonferroni")  # or use "bonferroni"
+
+emm2 <- emmeans(model, ~ cond_level * Expt)
+contrast(emm2, interaction = "pairwise", adjust = "bonferroni")
+
+# Step 2: Compute effect sizes (Cohen's d) for all pairwise contrasts of the interaction
+eff_size(emm2, interaction = "pairwise", sigma = sigma(model), edf = df.residual(model), method = "d")
 
 
 
