@@ -37,11 +37,11 @@ library(Hmisc)
 library(cowplot)
 library(viridis)
 library(afex)
-library(heplots)
+#library(heplots)
 
 library(emmeans)
 # dir need to change
-mydir = "~/Library/CloudStorage/Box/Honor Thesis/ultimate"
+#mydir = "~/Library/CloudStorage/Box/Honor Thesis/ultimate"
 ```
 
 ### Preprocess
@@ -1182,7 +1182,8 @@ library(emmeans)
 
 # Data Preparation
 filtered_data_rt <- search %>% 
-  filter(setsize != "1 target", group != "Unsure", FL != "N/A", correct == 1)
+  filter(setsize != "1 target", group != "Unsure", FL != "N/A", correct == 1) %>%
+  #filter(group != "Unsure", FL != "N/A", correct == 1)
 
 data_for_analysis_rt <- filtered_data_rt %>%
   group_by(subID, group, common, setsize) %>%
@@ -1197,16 +1198,55 @@ anova_results_rt <- aov_ez(data = data_for_analysis_rt,
                            type = 3)
 summary(anova_results_rt)
 
-# Effect Sizes
-effect_sizes_rt <- eta_squared(anova_results_rt)
-print(effect_sizes_rt)
+anova_results_pes <- aov_car(rt ~ group * common * setsize + Error(subID/(common*setsize)), 
+                             data = data_for_analysis_rt, 
+                             type = 3, 
+                             return = "Anova")
+# Effect size
+library(effectsize)
+eta_squared(anova_results_rt, partial = TRUE)
+
 
 # Post-hoc Analysis
-emm = emmeans(anova_results_rt, specs = ~ group)
+emm = emmeans(anova_results_rt, specs = ~ setsize)
 pairwise_comp = pairs(emm)
 print(pairwise_comp)
 pairwise_comp_adj = pairs(emm, adjust = "bonferroni")
 print(pairwise_comp_adj)
+```
+
+
+```{r whether the two groups different in the set size 1 condition for common vs unique}
+library(dplyr)
+library(effsize)  # for Cohen's d
+
+# Step 1: Data Preparation (you already have this)
+filtered_data_rt <- search %>% 
+  filter(setsize == "1 target", group != "Unsure", correct == 1)
+
+data_for_analysis_rt <- filtered_data_rt %>%
+  group_by(subID, group) %>%
+  summarise(rt = mean(RT), .groups = 'drop')
+
+# Step 2: Summary stats for each group
+summary_stats <- data_for_analysis_rt %>%
+  group_by(group) %>%
+  summarise(
+    mean_rt = mean(rt),
+    sd_rt = sd(rt),
+    n = n(),
+    .groups = 'drop'
+  )
+
+print(summary_stats)
+
+# Step 3: t-test
+t_test_result <- t.test(rt ~ group, data = data_for_analysis_rt, var.equal = TRUE)
+print(t_test_result)
+
+# Step 4: Effect size - Cohen's d
+cohen_d_result <- cohen.d(rt ~ group, data = data_for_analysis_rt)
+print(cohen_d_result)
 
 
 ```
