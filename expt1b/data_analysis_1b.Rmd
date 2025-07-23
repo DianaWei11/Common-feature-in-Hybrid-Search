@@ -250,7 +250,7 @@ summary(one.way1)
 effectsize::eta_squared(one.way1, partial = TRUE)
 
 # for RT
-two.way3 <- search %>%
+two.way3 <- df_1b %>%
   filter(tasks == "search") %>%
   filter(correct == 1) %>%
   filter(trial_struc != "target repeat") %>%
@@ -559,7 +559,7 @@ bindbar
 ```{r cross expt comparison}
 # tidy up the df for analysis
 
-df1a = df1a %>% 
+df1a = df_1a %>% 
   filter(tasks == "search") %>%
   dplyr::select(subID, cond_level, RT, correct) %>%
   mutate(Expt = "1a")
@@ -567,7 +567,7 @@ df1a = df1a %>%
 df1a$cond_level = as.factor(df1a$cond_level)
 df1a$Expt = as.factor(df1a$Expt)
 
-df1b = df1b %>% 
+df1b = df_1b %>% 
   filter(type == "test", tasks == "search") %>%
   dplyr::select(subID, trial_struc, RT, correct) %>%
   mutate(Expt = "1b")
@@ -581,8 +581,10 @@ df1b$Expt = as.factor(df1b$Expt)
 df1a$subID = as.numeric(df1a$subID)
 df1b$subID = as.numeric(df1b$subID)
 
-df = rbind(df1a, df1b) %>%
-  mutate(subID = ifelse(Expt == "1a", subID, subID+122))
+df = rbind(df1a, df1b) 
+
+#%>%
+ # mutate(subID = ifelse(Expt == "1a", subID, subID+122))
 
 
 df$subID = as.factor(df$subID)
@@ -615,6 +617,16 @@ print(anova_results)
 # Calculate partial eta squared for the mixed model
 eta_squared_results <- eta_squared(model, partial = TRUE)
 print(eta_squared_results)
+
+
+library(emmeans)
+
+# Get estimated marginal means per experiment
+emm <- emmeans(model, ~ cond_level | Expt)
+
+# Contrast unique vs common within each experiment
+pairs(emm, adjust = "bonferroni")  # or use "bonferroni"
+
 
 
 # Calculate estimated marginal means for Expt and cond_level
@@ -672,8 +684,11 @@ print(cohen_d_results)
 
 
 
-
-
+# Get interaction contrasts directly
+emm_int <- emmeans(model, ~ cond_level * Expt)
+ 
+# Contrast: (common - unique) in 1a vs (common - unique) in 1b
+contrast(emm_int, interaction = "pairwise", adjust = "bonferroni")
 
 
 ```
@@ -682,29 +697,63 @@ print(cohen_d_results)
 ```{r RT bar}
 cbp1a <- c("coral3","darkgray", "darkolivegreen3", "#F0B670", "#F8AA2C", "#D27E08",
           "#DD8F6B", "#F2AB6F") 
+
+#df = cross_compare
+# Compute contrast scores
+df_long <- df %>%
+    mutate(
+        diff1a_common_neutral = `1a_common` - `1a_neutral`,
+        diff1a_unique_neutral = `1a_unique` - `1a_neutral`,
+        diff1a_common_unique  = `1a_common` - `1a_unique`,
+        diff1b_common_neutral = `1b_common` - `1b_neutral`,
+        diff1b_unique_neutral = `1b_unique` - `1b_neutral`,
+        diff1b_common_unique  = `1b_common` - `1b_unique`
+    ) %>%
+    dplyr::select(subID, starts_with("diff1")) %>%
+    pivot_longer(
+        cols = starts_with("diff1"),
+        names_to = "comparison",
+        values_to = "RT_diff"
+    ) %>%
+    mutate(
+        Experiment = ifelse(grepl("1a", comparison), "Experiment 1a", "Experiment 1b"),
+        Contrast = case_when(
+            grepl("common_neutral", comparison) ~ "Common – Neutral",
+            grepl("unique_neutral", comparison) ~ "Unique – Neutral",
+            grepl("common_unique", comparison)  ~ "Common – Unique"
+        ),
+        Contrast = factor(Contrast, levels = c("Common – Neutral", "Unique – Neutral", "Common – Unique"))
+    )
+df_long$Experiment = as.factor(df_long$Experiment)
+
+#write.csv(df_long, "crossExp_plot.csv")
+
+
+
 ## Calculates mean, sd, se and IC
- rtsummary1a <- df1a %>%
-   group_by(cond_level) %>%
-   filter(correct == 1) %>%
+ rtsummary1a <- df_long %>%
+   filter(Experiment == "Experiment 1a") %>%
+   group_by(Contrast) %>%
    summarise(
      n = n(),
-     sd = sd(RT, na.rm = TRUE),
-     rt = mean(RT)
+     sd = sd(RT_diff, na.rm = TRUE),
+     rt = mean(RT_diff)
    )%>%
    mutate(se=sd/sqrt(n))  %>%
    mutate(ci=se * qt((1-0.05)/2 + .5, n-1)) %>%
    mutate(transrt = rt-600)
  
-rtbar1a = ggplot(data = rtsummary1a, aes(x = cond_level, y = transrt, fill = cond_level)) + 
+rtbar1a = ggplot(data = rtsummary1a, aes(x = Contrast, y = rt, fill = Contrast)) + 
   #facet_wrap(~cond_level,
              #strip.position = "bottom")  +
   ylab(NULL)+ 
    geom_bar(stat="identity", color="black", width = 0.8,
            position=position_dodge()) +
-  geom_errorbar(aes(ymin=transrt-ci, ymax=transrt+ci), width=.3, linewidth = 0.5,
+  geom_errorbar(aes(ymin=rt-se, ymax=rt+se), width=.3, linewidth = 0.5,
                 position=position_dodge(.5))+ 
-  scale_y_continuous(limits = c(0,400), breaks=seq(0,400,50),
-                     labels=seq(600,1000,50))+
+  scale_y_continuous(limits = c(0,100), breaks=seq(0,100,20))+
+                     #,
+                     #labels=seq(600,1000,50))+
   theme_classic() + 
   theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
         strip.text.y = element_text(size = 17, face = "bold"))+
@@ -722,33 +771,55 @@ rtbar1a = ggplot(data = rtsummary1a, aes(x = cond_level, y = transrt, fill = con
   theme(plot.title = element_text(size = 19, face = "bold", hjust = 0.5)) +
   theme(axis.title.y = element_text(size = 17, face = "bold", margin = margin(r = 5))) +
   theme(strip.background = element_blank(), strip.placement = "outside", strip.switch.pad.grid = unit(0, "lines"))+
-  ylab("Reaction Time in 1a (ms)")+
+  ylab("Reaction Time Differences (ms)")+
   labs(fill = "");rtbar1a
 
 
- rtsummary1b <- df1b %>%
-   group_by(cond_level) %>%
-   filter(cond_level == "common" | cond_level == "unique" | cond_level == "neutral") %>%
-   filter(correct == 1) %>%
+## Calculates mean, sd, se and IC
+ rtdiff1b <- df_long %>%
+   filter(Experiment == "Experiment 1b")
+write.csv(rtdiff1b, "rtdiff1b.csv")
+ 
+ rtsummary1b = rtdiff1b %>%
+   group_by(Contrast) %>%
    summarise(
      n = n(),
-     sd = sd(RT, na.rm = TRUE),
-     rt = mean(RT)
+     sd = sd(RT_diff, na.rm = TRUE),
+     rt = mean(RT_diff)
    )%>%
    mutate(se=sd/sqrt(n))  %>%
    mutate(ci=se * qt((1-0.05)/2 + .5, n-1)) %>%
-   mutate(transrt = rt-600)
+   mutate(transrt = rt-600) %>%
+   mutate(contrast = ifelse(Contrast == "Common – Neutral", "Repeat - Neutral",
+                     ifelse(Contrast == "Common – Unique", "Repeat – NonRepeat",
+                            "NonRepeat – Neutral")))
  
-rtbar1b = ggplot(data = rtsummary1b, aes(x = cond_level, y = transrt, fill = cond_level)) + 
+ # Define the contrast order and colors
+contrast_levels <- c("Common – Neutral", "Common – Unique", "Unique – Neutral")
+contrast_colors <- c("coral3", "darkgray", "darkolivegreen3")  # match length and order with cbp1a if needed
+
+# Apply to both summary dataframes
+rtsummary1a$Contrast <- factor(rtsummary1a$Contrast, levels = contrast_levels)
+rtsummary1b$Contrast <- factor(rtsummary1b$Contrast, levels = contrast_levels)
+
+# If you've renamed 'Contrast' to 'contrast' in 1b for relabeling:
+rtsummary1b$contrast <- factor(rtsummary1b$contrast,
+                               levels = c("Repeat - Neutral", "Repeat – NonRepeat", "NonRepeat – Neutral"))
+# In both rtbar1a and rtbar1b
+scale_fill_manual(values = contrast_colors)
+
+ 
+ rtbar1b = ggplot(data = rtsummary1b, aes(x = contrast, y = rt, fill = contrast)) + 
   #facet_wrap(~cond_level,
              #strip.position = "bottom")  +
   ylab(NULL)+ 
    geom_bar(stat="identity", color="black", width = 0.8,
            position=position_dodge()) +
-  geom_errorbar(aes(ymin=transrt-ci, ymax=transrt+ci), width=.3, linewidth = 0.5,
+  geom_errorbar(aes(ymin=rt-se, ymax=rt+se), width=.3, linewidth = 0.5,
                 position=position_dodge(.5))+ 
-  scale_y_continuous(limits = c(0,400), breaks=seq(0,400,50),
-                     labels=seq(600,1000,50))+
+  scale_y_continuous(limits = c(0,100), breaks=seq(0,100,20))+
+                     #,
+                     #labels=seq(600,1000,50))+
   theme_classic() + 
   theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
         strip.text.y = element_text(size = 17, face = "bold"))+
@@ -766,12 +837,127 @@ rtbar1b = ggplot(data = rtsummary1b, aes(x = cond_level, y = transrt, fill = con
   theme(plot.title = element_text(size = 19, face = "bold", hjust = 0.5)) +
   theme(axis.title.y = element_text(size = 17, face = "bold", margin = margin(r = 5))) +
   theme(strip.background = element_blank(), strip.placement = "outside", strip.switch.pad.grid = unit(0, "lines"))+
-  ylab("Reaction Time in 1b (ms)")+
+  ylab("Reaction Time Differences (ms)")+
   labs(fill = "");rtbar1b
 
 bindbar = plot_grid(rtbar1a, rtbar1b, labels = "AUTO")
 bindbar
 ```
+
+```{r tidy up the cross expt comparison}
+# Load libraries
+library(tidyverse)
+library(ggpubr)
+
+# Load your wide-format data
+df <- read.csv("cross_compare.csv")
+
+# difference between common and unique only
+# Compute difference scores
+df_long <- df %>%
+  mutate(
+    diff_1a = `X1a_common` - `X1a_unique`,
+    diff_1b = `X1b_common` - `X1b_unique`
+  ) %>%
+  dplyr::select(subID, diff_1a, diff_1b) %>%
+  pivot_longer(cols = starts_with("diff_"),
+               names_to = "Experiment",
+               values_to = "RT_diff") %>%
+  mutate(Experiment = ifelse(Experiment == "diff_1a",  "Experiment 1a", "Experiment 1b"))
+
+# Plot
+ggbarplot(df_long, x = "Experiment", y = "RT_diff",
+          add = "mean_se",
+          fill = "Experiment",
+          palette = c("#d95f02", "#1b9e77"),
+          ylab = "RT Difference (Common – Unique) [ms]",
+          xlab = "",
+          title = "Interaction Contrast: RT Difference by Experiment",
+          font.title = 14,
+          font.y = 12,
+          font.x = 12) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+
+# Full difference
+# Custom color palette
+cbp1a <- c("coral3", "darkgray", "darkolivegreen3", "#F0B670", "#F8AA2C", "#D27E08", "#DD8F6B", "#F2AB6F")
+
+
+# Compute contrast scores
+df_long <- df %>%
+    mutate(
+        diff1a_common_neutral = `X1a_common` - `X1a_neutral`,
+        diff1a_unique_neutral = `X1a_unique` - `X1a_neutral`,
+        diff1a_common_unique  = `X1a_common` - `X1a_unique`,
+        diff1b_common_neutral = `X1b_common` - `X1b_neutral`,
+        diff1b_unique_neutral = `X1b_unique` - `X1b_neutral`,
+        diff1b_common_unique  = `X1b_common` - `X1b_unique`
+    ) %>%
+    dplyr::select(subID, starts_with("diff1")) %>%
+    pivot_longer(
+        cols = starts_with("diff1"),
+        names_to = "comparison",
+        values_to = "RT_diff"
+    ) %>%
+    mutate(
+        Experiment = ifelse(grepl("1a", comparison), "Experiment 1a", "Experiment 1b"),
+        Contrast = case_when(
+            grepl("common_neutral", comparison) ~ "Common – Neutral",
+            grepl("unique_neutral", comparison) ~ "Unique – Neutral",
+            grepl("common_unique", comparison)  ~ "Common – Unique"
+        ),
+        Contrast = factor(Contrast, levels = c("Common – Neutral", "Unique – Neutral", "Common – Unique"))
+    )
+df_long$Experiment = as.factor(df_long$Experiment)
+# Summary stats with CI and transformed y (like in your plot)
+df_summary <- df_long %>%
+    dplyr::group_by(Experiment, Contrast) %>%
+    summarise(
+        rt = mean(RT_diff),
+        sd = sd(RT_diff),
+        n = n(),
+        se = sd / sqrt(n),
+        ci = se * qt((1 - 0.05) / 2 + .5, df = n - 1),
+        transrt = rt - 600,
+        .groups = "drop"
+    )
+
+# Bar plot using your aesthetics
+ggplot(data = df_long, aes(x = Contrast, y = rt, fill = Contrast)) + 
+    facet_wrap(~Experiment) +
+    geom_bar(stat = "identity", color = "black", width = 0.8) +
+    geom_errorbar(aes(ymin = transrt - ci, ymax = transrt + ci),
+                  width = .3, linewidth = 0.5) +
+    scale_y_continuous(limits = c(0, 400), breaks = seq(0, 400, 50),
+                       labels = seq(600, 1000, 50)) +
+    scale_fill_manual(values = cbp1a) +
+    ylab("RT Difference (ms)") +
+    theme_classic() +
+    theme(
+        strip.text = element_text(size = 17, face = "bold"),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.text.y = element_text(face = "bold", size = 15),
+        axis.title.y = element_text(size = 17, face = "bold", margin = margin(r = 5)),
+        legend.position = c(0.7, 0.95),
+        legend.text = element_text(size = 11, face = "bold"),
+        legend.direction = "vertical",
+        legend.spacing = unit(0.3, "cm"),
+        legend.key.height = unit(0.6, "cm"),
+        legend.key.width = unit(0.4, "cm"),
+        legend.key.size = unit(1, "cm"),
+        plot.title = element_text(size = 19, face = "bold", hjust = 0.5),
+        strip.background = element_blank(),
+        strip.placement = "outside",
+        strip.switch.pad.grid = unit(0, "lines")
+    ) +
+    labs(fill = "")
+
+```
+
 
 ```{r}
 ################## Xinger code
