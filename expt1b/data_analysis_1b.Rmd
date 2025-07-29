@@ -353,29 +353,61 @@ anova_table <- get_anova_table(anova_results, correction = "none")
 
 
 ```{r RT to check distractor baseline: why collapse}
-search = data
-search$cond_level = as.factor(search$cond_level)
+search = df
 search  = search %>%
   mutate(cond_color = 
-           ifelse(cond_target == "Target1" & cond_level == "blue", "color1",
-           ifelse(cond_target == "Target1" & cond_level == "red", "color2",
+           ifelse(cond_target == "Target1" & cond_level == "red", "color1",
+           ifelse(cond_target == "Target1" & cond_level == "blue", "color2",
            ifelse(cond_target == "Target2" & cond_level == "yellow", "color1",
            ifelse(cond_target == "Target2" & cond_level == "red", "color2", 
            ifelse(cond_target == "Target3" & cond_level == "blue", "color1",
            ifelse(cond_target == "Target3" & cond_level == "yellow", "color2", "neutral")))))))
 search$cond_color = as.factor(search$cond_color)
-two.way3 <- searchdf %>%
+two.way3 <- search %>%
   filter(tasks == "search") %>%
   filter(correct == 1) %>%
   filter(trial_struc != "target repeat") %>%
   group_by(subID, cond_target, cond_color) %>%
   summarise(rt = mean(RT), .groups = "drop") %>%
   ungroup()
+two.way3$subID = as.factor(two.way3$subID)
+two.way3$cond_target = as.factor(two.way3$cond_target)
+
+
+# using anova_test
 anova_results <- anova_test(data = two.way3, formula = rt ~ cond_target*cond_color + Error(subID / (cond_target*cond_color)),
              effect.size = "pes")
 anova_table <- get_anova_table(anova_results, correction = "none")
 # Calculate Cohen's d for all pairwise comparisons of cond_level
 library(effectsize)
+
+
+# using lmer
+model <- lmer(rt ~ cond_target*cond_color + (1|subID), data = two.way3)
+
+# Perform ANOVA on the mixed-effects model
+anova_results <- anova(model)
+print(anova_results)
+# Calculate partial eta squared for the mixed model
+eta_squared_results <- eta_squared(model, partial = TRUE)
+print(eta_squared_results)
+
+#### Post hoc for main effect
+library(emmeans)
+# Get estimated marginal means per experiment
+emm <- emmeans(model, ~ cond_color | cond_target)
+# Contrast unique vs common within each experiment
+pairs(emm, adjust = "bonferroni")  
+
+### Post hoc for the interaction
+emm2 <- emmeans(model, ~ cond_color * cond_target)
+contrast(emm2, interaction = "pairwise", adjust = "bonferroni")
+# Step 2: Compute effect sizes (Cohen's d) for all pairwise contrasts of the interaction
+eff_size(emm2, interaction = "pairwise", sigma = sigma(model), edf = df.residual(model), method = "d")
+
+
+
+
 
 # Group statistics
 group_stats <- two.way3 %>%
@@ -387,50 +419,7 @@ group_stats <- two.way3 %>%
     .groups = "drop"
   )
 
-one.way2 <- search %>%
-  filter(tasks == "search") %>%
-  filter(correct == 1) %>%
-  #filter(cond_color != "neutral") %>%
-  filter(trial_struc != "target repeat") %>%
-  group_by(subID, cond_target, cond_color) %>%
-  summarise(rt = mean(RT)) %>%
-  aov_car(data = ., formula = rt ~ cond_target* cond_color + Error(subID / cond_target* cond_color))
-summary(one.way2)
-# finally, calculate the effect size
-effectsize::eta_squared(one.way2, partial = TRUE)
 
-###### Post-hoc
-library(emmeans)
-# Perform pairwise comparisons to get t score and p value
-pairwise_results <- emmeans(one.way2, pairwise ~ cond_target:cond_color)
-summary(pairwise_results$contrasts, adjust = "bonferroni")
-# cohen's d for RT
-# Aggregate RT by subID and cond_level
-wide_data <- search %>%
-  filter(tasks == "search", correct == 1, trial_struc != "target repeat", cond_color != "neutral") %>%
-  group_by(subID, cond_target, cond_color) %>%
-  summarise(mean_rt = mean(RT), .groups = "drop") %>%
-  pivot_wider(names_from = c(cond_target, cond_color), values_from = mean_rt)  # Reshape to wide format
-
-# Calculate differences and Cohen's d
-wide_data <- wide_data %>%
-  mutate(difference = Target1_color1 - Target3_color1)
-# Target1_color1 - Target3_color1 = 0.45
-# Target1 color1 - Target3 color1     34.724  9.18 68   3.781  0.0119
-# Target1_color2 - Target2_color2 = 0.28
-#                                     estimate    SE      df    t.ratio     p.value
-# Target1 color2 - Target2 color2     -28.924     12.30   68    -2.344       0.7916
-# Target2_color1 - Target3_color2 = 0.37
-#Target2 color1 - Target3 color2     40.760 13.20 68   3.082  0.1069
-# Target2_neutral - Target3_neutral = 0.06
-# Target2_neutral - Target1_neutral = 0.03
-# Target3_neutral - Target1_neutral = 0.13
-
-mean_diff <- mean(wide_data$difference, na.rm = TRUE)
-sd_diff <- sd(wide_data$difference, na.rm = TRUE)
-
-cohen_d <- mean_diff / sd_diff
-cohen_d
 ```
 
 ```{r 3 seperarted one way ANOVA for color1 vs. color2}
@@ -490,6 +479,84 @@ cohens_d(df_color1_color2$color1, df_color1_color2$color2, paired = TRUE)
 
 ```
 
+```{r 4 seperated t-test for color-target comparison}
+####### Blue
+bluedf = df %>%
+  filter(cond_target == "Target1"& cond_level == "blue"|cond_target == "Target3"&cond_level == "blue") %>%
+  dplyr::select(subID, cond_level, cond_target, correct, RT) %>%
+  filter(correct == 1)
+# calculate means by subID and conditions
+# tidy up for t-test
+bluemean = bluedf %>%
+  dplyr::group_by(subID, cond_target, cond_level) %>%
+  #dplyr::mutate(rt = mean(RT)) %>%
+  summarise(rt = mean(RT)) %>%
+  ungroup() %>%
+  dplyr::select(cond_target,rt)
+
+## Traditional interface
+#with(bluemean, t.test(rt[cond_target== "Target1"], rt[cond_target== "Target3"]))
+
+# Assuming same subject order
+rt1 <- bluemean$rt[bluemean$cond_target == "Target1"]
+rt3 <- bluemean$rt[bluemean$cond_target == "Target3"]
+t.test(rt1, rt3, paired = TRUE)
+# Load and compute paired Cohen's d
+#library(effectsize)
+cohens_d(rt1, rt3, paired = TRUE)
+
+
+#### Yellow  
+yellowdf = df %>%
+  filter(cond_target == "Target2"& cond_level == "yellow"|cond_target == "Target3"&cond_level == "yellow")%>%
+  dplyr::select(subID, cond_level, cond_target, correct, RT)%>%
+  filter(correct == 1)
+# calculate means by subID and conditions
+# tidy up for t-test
+yellowmean = yellowdf %>%
+  dplyr::group_by(subID, cond_target, cond_level) %>%
+  #dplyr::mutate(rt = mean(RT)) %>%
+  summarise(rt = mean(RT)) %>%
+  ungroup() %>%
+  dplyr::select(cond_target,rt)
+
+## Traditional interface
+#with(yellowmean, t.test(rt[cond_target== "Target2"], rt[cond_target== "Target3"]))
+# Assuming same subject order
+rt1 <- yellowmean$rt[yellowmean$cond_target == "Target2"]
+rt3 <- yellowmean$rt[bluemean$cond_target == "Target3"]
+t.test(rt1, rt3, paired = TRUE)
+# Load and compute paired Cohen's d
+#library(effectsize)
+cohens_d(rt1, rt3, paired = TRUE)
+
+
+#### Red
+reddf = df %>%
+  filter(cond_target == "Target1"& cond_level == "red"|cond_target == "Target2"&cond_level == "red")%>%
+  dplyr::select(subID, cond_level, cond_target, correct, RT)%>%
+  filter(correct == 1)
+# calculate means by subID and conditions
+# tidy up for t-test
+redmean = reddf %>%
+  dplyr::group_by(subID, cond_target, cond_level) %>%
+  #dplyr::mutate(rt = mean(RT)) %>%
+  summarise(rt = mean(RT)) %>%
+  ungroup() %>%
+  dplyr::select(cond_target,rt)
+
+## Traditional interface
+#with(redmean, t.test(rt[cond_target== "Target1"], rt[cond_target== "Target2"]))
+
+rt1 <- redmean$rt[redmean$cond_target == "Target2"]
+rt3 <- redmean$rt[redmean$cond_target == "Target1"]
+t.test(rt1, rt3, paired = TRUE)
+# Load and compute paired Cohen's d
+#library(effectsize)
+cohens_d(rt1, rt3, paired = TRUE)
+
+
+```
 
 ################## Graph ##################################
 ```{r RT bar}
