@@ -1,0 +1,2578 @@
+---
+title: "data process for ultimate"
+author: "Diana Wei"
+date: "2024-01-16"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(readxl)
+library(Matrix)
+library(data.table)
+library(readxl)
+library(tidyverse)
+library(Matrix)
+library(data.table)
+library("reshape") 
+library(Matrix)
+library(data.table)
+library(DescTools)
+library(car)
+#library(ggpubr)
+require(gridExtra)
+library(Matrix)
+library(data.table)
+#library(hrbrthemes)
+library(lme4)
+require("rstatix")
+library("afex")
+library(sjstats)
+library("rmcorr")
+library(multcomp)
+require("maxLik")
+library(scales)
+library(Hmisc)
+library(cowplot)
+library(viridis)
+library(afex)
+#library(heplots)
+
+library(emmeans)
+# dir need to change
+#mydir = "~/Library/CloudStorage/Box/Honor Thesis/ultimate"
+```
+
+### Preprocess
+```{r import all files from that directory}
+# There are 379 rows for the cvs file, and I want to skip the first 3 rows and consider the 4th row as the new header. So the correct row number for the new dataframe should be 379-4 = 375, instead of being 376.
+# pay attention to the number
+read_csv_if_376_trials <- function(file_path, skip = 3, header = TRUE) {
+  df <- read.csv(file_path, skip = skip, header = header)
+  print(paste("Reading:", file_path)) # Debugging line
+  print(paste("Number of rows:", nrow(df))) # Debugging line
+  if (nrow(df) == 375) {
+    return(df)
+  } else {
+    return(NULL)
+  }
+}
+
+# Define your directory here
+mydir <- "~/Library/CloudStorage/Box-Box/Honor Thesis/ultimate/main"
+
+# List and read files with pattern "932736"
+files <- list.files( pattern = "932736", full.names = TRUE) # Full paths
+
+# Debugging line
+print(paste("Found files:", length(files)))
+
+data_frames <- lapply(files, read_csv_if_376_trials)
+data_frames <- Filter(Negate(is.null), data_frames) # Remove NULL elements
+
+# Check if any data frames were read
+if(length(data_frames) > 0) {
+  my_data_frame <- do.call(rbind, data_frames)
+} else {
+  print("No suitable data frames found.")
+}
+```
+
+```{r assign subID}
+# rep need change
+id = data.frame(subID = rep(1:76,each = 375)) # create a new df with name id
+df = cbind(my_data_frame,id) # combined two df to assign subID
+```
+
+```{r remove low acc participants}
+lowacc = cleandata %>%
+  group_by(subID,tasks) %>% 
+  mutate(accuracy = mean(correct)) %>% 
+  mutate(lowAcc = ifelse(tasks == "search" & accuracy < 0.75, "bad ACC", "passed"))%>% filter(lowAcc == "bad ACC")
+lowID = unique(lowacc$subID)
+df_acc_remove = cleandata %>% filter(!subID %in% lowID) # create df for accuracy passed participants.
+
+# remain ? subs
+```
+
+```{r check demographic}
+expt2data %>% filter(cond_level == "demo") %>% group_by(response) %>% count()
+# age range: 18-33
+# Asian 38, Blk or af 2, Hispanic or latino 8, white 6
+# female 48, male 17
+# left handed 5, right 60
+```
+
+
+```{r RT criteria}
+df_time= df_acc_remove %>%
+        mutate(cond = 
+        ifelse(tasks == "search" & RT > 3000, "time out",
+        ifelse(tasks == "search" & RT < 250, "too fast", "NA")))
+
+df_intime = df_time %>% filter(cond != "time out" | cond!= "too fast")
+# 68289 - 63776 / 68289 trials
+# 0.066 data loss
+
+write.csv(df_intime, "final_cleanData.csv", row.names = FALSE)
+
+
+
+findoutlier <- function(x) {
+  return(x < quantile(x, .25) - 3*IQR(x) | x > quantile(x, .75) + 3*IQR(x))
+}
+
+df_findoutlier <- df_intime %>%
+        group_by(subID, tasks) %>% #find outlier for each 3*3 condition
+        mutate(outlier = ifelse(findoutlier(RT), RT, NA))
+
+df_no_oulier = df_findoutlier %>%
+  filter(is.na(outlier) == T)
+
+# after removing outliers, only 3373 trials remaining.
+
+```
+
+```{r check insufficient trial participants}
+180*0.7 # <126 will be insufficient trials
+suf_searchtrials = df_no_oulier %>% filter(tasks == "search") %>%
+  group_by(subID) %>% dplyr::summarise(n = n()) %>%
+  filter(n>=126) # change n>= depends on the calculation
+sufID = unique(suf_searchtrials$subID)
+df_insuf_remove = df_no_oulier %>% filter(subID %in% sufID)
+data = df_insuf_remove
+# no remaining subjects are kicked out due to insuf trials.
+
+
+###################### Export my data ###############################
+write.csv(data, "data.csv", row.names = FALSE) # the data is not with my assigned levels.
+```
+
+### DATA ANALYSIS
+
+
+#### Training Data
+```{r traing data}
+train = df_acc_remove %>% 
+  filter(tasks == "training") %>% group_by(subID, cond_level) %>%
+  mutate(acc = mean(correct)) %>%
+  mutate(rt = mean(RT))
+
+train %>%
+  group_by(cond_level) %>% summarise(mean(rt), sd(rt),mean(acc), sd(acc))
+
+training = df_insuf_remove %>% filter(tasks == "training") %>% group_by(cond_level, cond_color) %>% summarise(mean(RT), mean(correct))
+training
+```
+
+#### Search Data
+
+####### assign variable
+```{r summary stats}
+data = final_cleanData
+# remember to as.factor! very important!!!!!!
+data$cond_color = as.factor(data$cond_color)
+data$cond_level = as.factor(data$cond_level)
+data$subID = as.integer(data$subID)
+
+# assign group: whether realize color as common feature or not
+cleandata <- final_cleanData
+realize = cleandata %>% filter(response == "Yes, I noticed and I used color to search")
+unique(realize$subID)
+norealize = cleandata %>% filter(response == "No, I did not notice that the cued items had same color")
+unique(norealize$subID)
+expt2data = expt2data %>% 
+  mutate(group = ifelse(subID == 1|subID == 5|subID == 7|subID == 8| subID == 11| subID == 12|subID ==  17|subID ==  19|subID ==  22|subID ==  23| subID == 28| subID == 31| subID == 32| subID == 34| subID == 35| subID == 36| subID == 41| subID == 52| subID == 54| subID == 57| subID == 61| subID == 65| subID == 68| subID == 70| subID == 73| subID == 74| subID == 75, "Use Color",
+                 ifelse(subID ==2| subID ==14| subID ==16| subID ==20| subID ==25| subID ==26| subID ==29| subID ==30| subID ==33| subID ==40| subID ==42| subID ==43| subID ==45| subID ==46| subID ==48| subID ==49| subID ==53| subID ==56| subID ==58| subID ==60| subID ==63| subID ==66| subID ==69| subID ==76, "Didn't Use", "Unsure")))
+write.csv(expt2data, "alldataWithGroup.csv", row.names = FALSE) # the data is not with my assigned levels.'
+
+
+search = expt2data %>% 
+  filter(tasks == "search") %>% # mutate number of target
+  mutate(setsize = ifelse(cond_level == "3diff", "3 targets",
+                                        ifelse(cond_level == "3 same", "3 targets",
+                                               ifelse(cond_level == "5 diff", "5 targets",
+                                                      ifelse(cond_level== "all same", "5 targets", "1 target"))))) %>% # mutate if common feature/no common feature
+  mutate(common = ifelse(cond_level == "3diff", "no common",
+                                        ifelse(cond_level == "3 same", "common",
+                                               ifelse(cond_level == "5 diff", "no common",
+                                                      ifelse(cond_level== "all same", "common", "1 target")))))%>% # mutate serial position of target
+  mutate(serialPos = ifelse(stim1 == "3diff11"|stim1 == "3diff13"|stim1 == "3diff14"|stim1 == "3diff17"|stim1 == "3diff19"|stim1 == "3diff20"|stim1 == "3diff5"|stim1 == "3same12"|stim1 == "3same14"|stim1 == "3same16"|stim1 == "3same17"|stim1 == "3same18"|stim1 == "3same19"|stim1 == "3same20"|stim1 == "3same6"|stim1 == "5diff1"|stim1 == "5diff10"|stim1 == "5diff11"|stim1 == "5diff14"|stim1 == "5diff17"|stim1 == "5diff2"|stim1 == "5diff20"|stim1 == "5diff5"|stim1 == "5diff6"|stim1 == "allblue1"|stim1 == "allblue7"|stim1 == "allblue9"|stim1 == "allyellow10"|stim1 == "allyellow9", 1,
+                       ifelse(stim1 == "3diff1"|stim1 == "3diff15"|stim1 == "3diff16"|stim1 == "3diff18"|stim1 == "3diff3"|stim1 == "3diff4"|stim1 == "3same10"|stim1 == "3same15"|stim1 == "3same3"|stim1 == "3same4"|stim1 == "3same7"|stim1 == "3same9"|stim1 == "5diff19"|stim1 == "5diff4"|stim1 == "allblue3"|stim1 == "allblue5"|stim1 == "allgreen2"|stim1 == "allgreen5"|stim1 == "allgreen8"|stim1 == "allgreen9"|stim1 == "allred1"|stim1 == "allred6"|stim1 == "allred7"|stim1 == "allyellow1"|stim1 == "allyellow4"|stim1 == "allyellow5", 2,
+                      ifelse(stim1 == "3diff10"|stim1 == "3diff12"|stim1 == "3diff2"|stim1 == "3diff6"|stim1 == "3diff7"|stim1 == "3diff8"|stim1 == "3diff9"|stim1 == "3same1"|stim1 == "3same11"|stim1 == "3same13"|stim1 == "3same2"|stim1 == "3same8"|stim1 == "5diff3"|stim1 == "5diff13"|stim1 == "5diff7"|stim1 == "5diff8"|stim1 == "5diff9"|stim1 == "allgreen1"|stim1 == "allgreen10"|stim1 == "allred2"|stim1 == "allred9"|stim1 == "allyellow2"|stim1 == "allyellow6", 3,
+                      ifelse(stim1 == "5diff12"|stim1 == "5diff15"|stim1 == "5diff18"|stim1 == "allblue10"|stim1 == "allblue2"|stim1 == "allblue4"|stim1 == "allblue8"|stim1 == "allgreen4"|stim1 == "allgreen6"|stim1 == "allgreen7"|stim1 == "allred10"|stim1 == "allred4"|stim1 == "allred5"|stim1 == "allyellow3"|stim1 == "allyellow7", 4,
+                       ifelse(stim1 == "5diff16"|stim1 == "allblue6"|stim1 == "allgreen3"|stim1 == "allred3"|stim1 == "allred8"|stim1 == "allyellow8", 5, "N/A"))))))
+
+search = search %>% # mutate the serial position as binary for data analysis
+  mutate(FL = ifelse(serialPos == 3 & setsize == "3 targets", "FL",
+              ifelse(serialPos == 5 & setsize == "5 targets", "FL",
+              ifelse(serialPos == 1, "FL", 
+              ifelse(serialPos == "N/A", "N/A", "NonFL")))))
+write.csv(search, "search_allvar.csv", row.names = FALSE) # the data is not with my assigned levels.'
+
+searchdf = df2 %>%
+  filter(tasks == "search") %>%
+  dplyr::select(subID, group, setsize, common, FL, correct,RT)
+write.csv(searchdf, "searchdf_expt2.csv")
+```
+
+```{r use group to check training performance}
+# get descriptive stats
+training = cleandata %>% 
+  filter(tasks == "training") %>% 
+  group_by(group, cond_level) %>% 
+  summarise(mean(RT), sd(RT), mean(correct), sd(correct))
+training
+
+# t-test between "use" and "no use"
+train = expt2data %>% 
+  filter(tasks == "training") %>% group_by(group, subID, cond_level) %>%
+  mutate(acc = mean(correct)) %>%
+  mutate(rt = mean(RT)) %>%
+  ungroup()
+
+# when DV is rt, need filter correct == 1 trials
+train_rt <- train %>%
+  filter(correct == 1) %>%
+  filter(group != "Unsure") %>%
+  dplyr::select(group,RT)
+
+# seperated df for t-test
+group1 = train_rt %>% filter(group == "Use Color")
+group2 = train_rt %>% filter(group == "Didn't Use")
+
+group1$RT = as.numeric(group1$RT)
+group2$RT = as.numeric(group2$RT)
+
+# Perform t-test
+t_test_result <- t.test(group1$RT, group2$RT)
+t_test_result
+
+# cohen's d = 0.09154413
+
+#################
+
+# seperated df for t-test
+group1 = train %>% filter(group == "Use Color")
+group2 = train %>% filter(group == "Didn't Use")
+
+group1$acc = as.numeric(group1$acc)
+group2$acc = as.numeric(group2$acc)
+
+# Perform t-test
+t_test_result <- t.test(group1$acc, group2$acc)
+t_test_result
+
+# cohen's d = 0.2390956
+
+# Calculate means and standard deviations
+mean1 <- mean(group1$RT)
+mean2 <- mean(group2$RT)
+sd1 <- sd(group1$RT)
+sd2 <- sd(group2$RT)
+
+# Calculate pooled standard deviation
+pooled_sd <- sqrt(((sd1^2) + (sd2^2)) / 2)
+
+# Calculate Cohen's d
+cohen_d <- abs(mean1 - mean2) / pooled_sd
+cohen_d
+
+
+# get descriptive stats
+training = expt2data %>% filter(tasks == "training") %>% group_by(group) %>% summarise(mean(correct), sd(correct))
+training
+
+training_rt = expt2data %>% filter(tasks == "training") %>%
+  filter(correct == 1)%>% group_by(group) %>% summarise(mean(RT), sd(RT))
+training_rt
+```
+
+
+
+```{r we might not need to filter the 1 target out}
+# now exclude 1 target situation as base level.
+search %>% filter(setsize!= "1 target") %>%
+  filter(group != "Unsure") %>%
+  group_by(setsize, common)%>%
+  summarise(accuracy = mean(correct))
+searchRT %>% filter(setsize!= "1 target") %>%
+  filter(group != "Unsure") %>%
+  group_by(setsize, common)%>%
+  summarise(RT = mean(RT))
+``` 
+
+```{r change to factors}
+############## set every variable as factor for data analysis
+searchRT = search %>%filter(correct ==1)
+search$setsize <- as.factor(search$setsize)
+search$common <- as.factor(search$common)
+search$group <- as.factor(search$group)
+search$subID <- as.factor(search$subID)
+search$FL <- as.factor(search$FL)
+searchRT$setsize <- as.factor(searchRT$setsize)
+searchRT$common <- as.factor(searchRT$common)
+searchRT$group <- as.factor(searchRT$group)
+searchRT$subID <- as.factor(searchRT$subID)
+searchRT$FL <- as.factor(searchRT$FL)
+
+# these are the cleaned and processed files for analysis
+# remember to import!!!!
+write.csv(search, "search.csv", row.names = FALSE) 
+write.csv(searchRT, "searchRT.csv", row.names = FALSE) 
+```
+
+# check training data
+```{r}
+train = train %>% 
+  mutate(group = ifelse(subID == 1|subID == 5|subID == 7|subID == 8| subID == 11| subID == 12|subID ==  17|subID ==  19|subID ==  22|subID ==  23| subID == 28| subID == 31| subID == 32| subID == 34| subID == 35| subID == 36| subID == 41| subID == 52| subID == 54| subID == 57| subID == 61| subID == 65| subID == 68| subID == 70| subID == 73| subID == 74| subID == 75, "Use Color",
+                 ifelse(subID ==2| subID ==14| subID ==16| subID ==20| subID ==25| subID ==26| subID ==29| subID ==30| subID ==33| subID ==40| subID ==42| subID ==43| subID ==45| subID ==46| subID ==48| subID ==49| subID ==53| subID ==56| subID ==58| subID ==60| subID ==63| subID ==66| subID ==69| subID ==76, "Didn't Use", "Unsure")))
+
+####### Independent t-test for training result
+train2Group = train %>% filter(group != "Unsure")
+t_test_results = t.test(rt ~ group, 
+                        data = train2Group,
+                        paired = FALSE);print(t_test_results)
+
+t_test_results = t.test(acc ~ group, 
+                        data = train2Group,
+                        paired = FALSE);print(t_test_results)
+
+######## ANOVA
+# RT
+anova_results <- aov(rt ~ group, data = train)
+summary(anova_results)
+# Post-hoc tests if ANOVA is significant
+post_hoc_results <- TukeyHSD(anova_results)
+print(post_hoc_results)
+
+# Acc
+anova_results <- aov(acc ~ group, data = train)
+summary(anova_results)
+# Post-hoc tests if ANOVA is significant
+post_hoc_results <- TukeyHSD(anova_results)
+print(post_hoc_results)
+```
+
+
+# descriptive stats for each group
+```{r stats}
+search %>% group_by(group, common, setsize, FL) %>% summarise(mean(RT), sd(RT), mean(correct), sd(correct))
+search %>% group_by(common, setsize) %>% summarise(mean(RT), sd(RT), mean(correct), sd(correct))
+
+
+```
+# setsize X common feature (merged group)
+```{r}
+################################## ACC ##################################
+###### use color group (marginal common main effect)
+filtered_data_acc <- search %>% 
+  filter(setsize != "1 target")
+
+data_for_analysis_acc <- filtered_data_acc %>%
+  group_by(subID, common, setsize) %>%
+  summarise(accuracy = mean(correct), .groups = 'drop')
+
+aov_results_acc <- aov_car(data = data_for_analysis_acc, 
+                       formula = accuracy ~ common * setsize + Error(subID/(common*setsize)))
+
+summary(aov_results_acc)
+
+effect_sizes_acc <- eta_squared(aov_results_acc)
+print(effect_sizes_acc)
+
+############################### RT ###############################
+
+filtered_data_rt <- searchRT %>% 
+  filter(setsize != "1 target")
+
+data_for_analysis_rt <- filtered_data_rt %>%
+  group_by(subID, common, setsize) %>%
+  summarise(rt = mean(RT), .groups = 'drop')
+
+
+anova_results_rt <- aov_car(data = data_for_analysis_rt, 
+                         formula = rt ~ common * setsize + Error(subID / (common * setsize)))
+summary(anova_results_rt)
+
+effect_sizes_rt <- eta_squared(anova_results_rt)
+print(effect_sizes_rt)
+
+#### post-hoc needed
+
+#for common main effect
+emmeans_results <- emmeans(anova_results_rt, ~ common)
+# Pairwise comparisons with Bonferroni adjustment
+pairwise_comparisons <- pairs(emmeans_results, adjust = "bonferroni")
+print(pairwise_comparisons)
+
+# Post-hoc pairwise comparisons for the `common` main effect
+emmeans_results_common <- emmeans(anova_results_rt, ~ common)
+pairwise_comparisons_common <- pairs(emmeans_results_common, adjust = "bonferroni")
+
+# Extract estimates (mean differences) and SEs from pairwise comparisons
+pairwise_common_table <- as.data.frame(pairwise_comparisons_common)
+
+# Calculate Cohen's d for `common`
+pairwise_common_table <- pairwise_common_table %>%
+  mutate(
+    SD_diff = SE * sqrt(df),  # Approximate SD of the differences
+    Cohens_d = estimate / SD_diff
+  )
+
+print(pairwise_common_table)
+
+
+##for setsize main effect
+emmeans_results <- emmeans(anova_results_rt, ~ setsize)
+# Pairwise comparisons with Bonferroni adjustment
+pairwise_comparisons <- pairs(emmeans_results, adjust = "bonferroni")
+print(pairwise_comparisons)
+
+# Post-hoc pairwise comparisons for the `setsize` main effect
+emmeans_results_setsize <- emmeans(anova_results_rt, ~ setsize)
+pairwise_comparisons_setsize <- pairs(emmeans_results_setsize, adjust = "bonferroni")
+
+# Extract estimates (mean differences) and SEs from pairwise comparisons
+pairwise_setsize_table <- as.data.frame(pairwise_comparisons_setsize)
+
+# Calculate Cohen's d for `setsize`
+pairwise_setsize_table <- pairwise_setsize_table %>%
+  mutate(
+    SD_diff = SE * sqrt(df),  # Approximate SD of the differences
+    Cohens_d = estimate / SD_diff
+  )
+
+print(pairwise_setsize_table)
+
+```
+
+
+# setsize X common feature, seprated group
+```{r stats test}
+################################## ACC ##################################
+###### use color group (marginal common main effect)
+filtered_data_acc <- search %>% 
+  filter(setsize != "1 target", group == "Use Color")
+
+data_for_analysis_acc <- filtered_data_acc %>%
+  group_by(subID, common, setsize) %>%
+  summarise(accuracy = mean(correct), .groups = 'drop')
+
+aov_results_acc <- aov_car(data = data_for_analysis_acc, 
+                       formula = accuracy ~ common * setsize + Error(subID/(common*setsize)))
+
+summary(aov_results_acc)
+
+effect_sizes_acc <- eta_squared(aov_results_acc)
+print(effect_sizes_acc)
+
+
+###### NO use color group (non sig)
+filtered_data_acc <- search %>% 
+  filter(setsize != "1 target", group == "Didn't Use")
+
+data_for_analysis_acc <- filtered_data_acc %>%
+  group_by(subID, common, setsize) %>%
+  summarise(accuracy = mean(correct), .groups = 'drop')
+
+aov_results_acc <- aov_car(data = data_for_analysis_acc, 
+                       formula = accuracy ~ common * setsize + Error(subID/(common*setsize)))
+
+summary(aov_results_acc)
+
+effect_sizes_acc <- eta_squared(aov_results_acc)
+print(effect_sizes_acc)
+
+#### post-hoc needed
+#for common main effect
+library(emmeans)
+# Assuming aov_results_acc is your ANOVA model
+emmeans_results <- emmeans(aov_results_acc, ~ common)
+# Pairwise comparisons with Bonferroni adjustment
+pairwise_comparisons <- pairs(emmeans_results, adjust = "bonferroni")
+print(pairwise_comparisons)
+
+# calculate effect size of t-test
+library(effsize)
+# Assuming you have two groups for comparison (replace with your actual data)
+group1 <- data_for_analysis_acc[data_for_analysis_acc$common == "common", "accuracy"]
+group2 <- data_for_analysis_acc[data_for_analysis_acc$common == "no common", "accuracy"]
+# Convert the 'accuracy' column of the tibble to a numeric vector
+group1_vector <- as.numeric(group1$accuracy)
+# Do the same for group2
+group2_vector <- as.numeric(group2$accuracy)
+# Now calculate Cohen's d
+d <- cohen.d(group1_vector, group2_vector)
+print(d)
+
+
+
+#### for common:setsize interaction
+emm = emmeans(aov_results_acc, specs = ~ setsize * common)
+pairwise_comp = pairs(emm)
+print(pairwise_comp)
+pairwise_comp_adj = pairs(emm, adjust = "bonferroni")
+print(pairwise_comp_adj)
+# Assuming 'data_for_analysis_acc' is your data frame
+
+# Filter data for 'common' level
+data_3tar <- filter(data_for_analysis_acc, setsize == "3 targets")
+
+# Perform t-test for 'setsize' within 'common'
+t_test_3tar <- t.test(accuracy ~ common, data = data_3tar)
+
+# Filter data for 'no common' level
+data_5tar <- filter(data_for_analysis_acc, setsize == "5 targets")
+
+# Perform t-test for 'setsize' within 'no common'
+t_test_5tar <- t.test(accuracy ~ common, data = data_5tar)
+
+# Print the results
+print(t_test_3tar)
+print(t_test_5tar)
+
+
+################################### RT ##################################
+
+# use color group (main common, main setsize)
+filtered_data_rt <- searchRT %>% 
+  filter(setsize != "1 target", group == "Use Color")
+
+data_for_analysis_rt <- filtered_data_rt %>%
+  group_by(subID, common, setsize) %>%
+  summarise(rt = mean(RT), .groups = 'drop')
+
+
+anova_results_rt <- aov_car(data = data_for_analysis_rt, 
+                         formula = rt ~ common * setsize + Error(subID / (common * setsize)))
+summary(anova_results_rt)
+
+effect_sizes_rt <- eta_squared(anova_results_rt)
+print(effect_sizes_rt)
+
+#### post-hoc needed
+#for common main effect
+emmeans_results <- emmeans(anova_results_rt, ~ common * setsize)
+# Pairwise comparisons with Bonferroni adjustment
+pairwise_comparisons <- pairs(emmeans_results, adjust = "bonferroni")
+print(pairwise_comparisons)
+
+# calculate effect size of t-test
+library(effsize)
+# Assuming you have two groups for comparison (replace with your actual data)
+group1 <- data_for_analysis_rt[data_for_analysis_rt$common == "common", "rt"]
+group2 <- data_for_analysis_rt[data_for_analysis_rt$common == "no common", "rt"]
+# Convert the 'accuracy' column of the tibble to a numeric vector
+group1_vector <- as.numeric(group1$rt)
+# Do the same for group2
+group2_vector <- as.numeric(group2$rt)
+# Now calculate Cohen's d
+d <- cohen.d(group1_vector, group2_vector)
+print(d)
+
+##for setsize main effect
+emmeans_results <- emmeans(anova_results_rt, ~ setsize)
+# Pairwise comparisons with Bonferroni adjustment
+pairwise_comparisons <- pairs(emmeans_results, adjust = "bonferroni")
+print(pairwise_comparisons)
+
+# calculate effect size of t-test
+library(effsize)
+# Assuming you have two groups for comparison (replace with your actual data)
+group1 <- data_for_analysis_rt[data_for_analysis_rt$setsize == "3 targets", "rt"]
+group2 <- data_for_analysis_rt[data_for_analysis_rt$setsize == "5 targets", "rt"]
+# Convert the 'rt' column of the tibble to a numeric vector
+group1_vector <- as.numeric(group1$rt)
+# Do the same for group2
+group2_vector <- as.numeric(group2$rt)
+# Now calculate Cohen's d
+d <- cohen.d(group1_vector, group2_vector)
+print(d)
+
+# NO use color group (non sig)
+filtered_data_rt <- searchRT %>% 
+  filter(setsize != "1 target", group == "Didn't Use")
+
+data_for_analysis_rt <- filtered_data_rt %>%
+  group_by(subID, common, setsize) %>%
+  summarise(rt = mean(RT), .groups = 'drop')
+
+
+anova_results_rt <- aov_car(data = data_for_analysis_rt, 
+                         formula = rt ~ common * setsize + Error(subID / (common * setsize)))
+summary(anova_results_rt)
+
+effect_sizes_rt <- eta_squared(anova_results_rt)
+print(effect_sizes_rt)
+
+#### post-hoc needed
+#for common main effect
+emmeans_results <- emmeans(anova_results_rt, ~ common * setsize)
+# Pairwise comparisons with Bonferroni adjustment
+pairwise_comparisons <- pairs(emmeans_results, adjust = "bonferroni")
+print(pairwise_comparisons)
+
+# calculate effect size of t-test
+library(effsize)
+# Assuming you have two groups for comparison (replace with your actual data)
+group1 <- data_for_analysis_rt[data_for_analysis_rt$common == "common", "rt"]
+group2 <- data_for_analysis_rt[data_for_analysis_rt$common == "no common", "rt"]
+# Convert the 'accuracy' column of the tibble to a numeric vector
+group1_vector <- as.numeric(group1$rt)
+# Do the same for group2
+group2_vector <- as.numeric(group2$rt)
+# Now calculate Cohen's d
+d <- cohen.d(group1_vector, group2_vector)
+print(d)
+
+##for setsize main effect
+emmeans_results <- emmeans(anova_results_rt, ~ setsize)
+# Pairwise comparisons with Bonferroni adjustment
+pairwise_comparisons <- pairs(emmeans_results, adjust = "bonferroni")
+print(pairwise_comparisons)
+
+# calculate effect size of t-test
+library(effsize)
+# Assuming you have two groups for comparison (replace with your actual data)
+group1 <- data_for_analysis_rt[data_for_analysis_rt$setsize == "3 targets", "rt"]
+group2 <- data_for_analysis_rt[data_for_analysis_rt$setsize == "5 targets", "rt"]
+# Convert the 'rt' column of the tibble to a numeric vector
+group1_vector <- as.numeric(group1$rt)
+# Do the same for group2
+group2_vector <- as.numeric(group2$rt)
+# Now calculate Cohen's d
+d <- cohen.d(group1_vector, group2_vector)
+print(d)
+
+```
+
+#setsize X common X serialPos
+```{r}
+################################## ACC ##################################
+
+
+filtered_data_acc <- search %>% 
+  filter(setsize != "1 target", FL!= "N/A")
+
+data_for_analysis_acc <- filtered_data_acc %>%
+  group_by(subID, common, setsize, FL) %>%
+  summarise(accuracy = mean(correct), .groups = 'drop')
+
+aov_results_acc <- aov_car(data = data_for_analysis_acc, 
+                       formula = accuracy ~ common * setsize * FL + Error(subID/(common*setsize*FL)))
+
+summary(aov_results_acc)
+
+effect_sizes_acc <- eta_squared(aov_results_acc)
+print(effect_sizes_acc)
+
+
+################################### RT ##################################
+
+filtered_data_rt <- searchRT %>% 
+  filter(setsize != "1 target", FL!= "N/A")
+
+data_for_analysis_rt <- filtered_data_rt %>%
+  group_by(subID, common, setsize, FL) %>%
+  summarise(rt = mean(RT), .groups = 'drop')
+
+
+anova_results_rt <- aov_car(data = data_for_analysis_rt, 
+                         formula = rt ~ common * setsize *FL + Error(subID / (common * setsize*FL)))
+summary(anova_results_rt)
+
+effect_sizes_rt <- eta_squared(anova_results_rt)
+print(effect_sizes_rt)
+
+#### post-hoc needed
+#for common main effect
+emmeans_results <- emmeans(anova_results_rt, ~ common)
+# Pairwise comparisons with Bonferroni adjustment
+pairwise_comparisons <- pairs(emmeans_results, adjust = "bonferroni")
+print(pairwise_comparisons)
+
+
+
+##for setsize main effect
+emmeans_results <- emmeans(anova_results_rt, ~ setsize)
+# Pairwise comparisons with Bonferroni adjustment
+pairwise_comparisons <- pairs(emmeans_results, adjust = "bonferroni")
+print(pairwise_comparisons)
+
+
+##for FL main effect
+# Pairwise comparisons with Bonferroni adjustment
+# Post-hoc pairwise comparisons for the `setsize` main effect
+emmeans_results_FL <- emmeans(anova_results_rt, ~ FL)
+pairwise_comparisons_FL <- pairs(emmeans_results_FL, adjust = "bonferroni")
+
+# Extract estimates (mean differences) and SEs from pairwise comparisons
+pairwise_FL_table <- as.data.frame(pairwise_comparisons_FL)
+
+# Calculate Cohen's d for `FL`
+pairwise_FL_table <- pairwise_FL_table %>%
+  mutate(
+    SD_diff = SE * sqrt(df),  # Approximate SD of the differences
+    Cohens_d = estimate / SD_diff
+  )
+
+print(pairwise_FL_table)
+
+
+library(emmeans)
+library(dplyr)
+
+# Post-hoc pairwise comparisons for the interaction between FL and common
+emmeans_results_interaction <- emmeans(anova_results_rt, ~ FL * common)
+
+# Pairwise comparisons for the interaction with Bonferroni adjustment
+pairwise_comparisons_interaction <- pairs(emmeans_results_interaction, adjust = "bonferroni")
+
+# Extract estimates (mean differences) and SEs from pairwise comparisons
+pairwise_interaction_table <- as.data.frame(pairwise_comparisons_interaction)
+
+# Calculate Cohen's d for the interaction
+pairwise_interaction_table <- pairwise_interaction_table %>%
+  mutate(
+    SD_diff = SE * sqrt(df),  # Approximate SD of the differences
+    Cohens_d = estimate / SD_diff
+  )
+
+# Print results
+print(pairwise_interaction_table)
+
+```
+
+
+# setsize X serial position
+```{r stats test}
+################################## ACC ##################################
+###### use color group (non sig)
+filtered_data_acc <- search %>% 
+  filter(setsize != "1 target", group == "Use Color", FL != "N/A")
+
+data_for_analysis_acc <- filtered_data_acc %>%
+  group_by(subID, FL, setsize) %>%
+  summarise(accuracy = mean(correct), .groups = 'drop')
+
+aov_results_acc <- aov_car(data = data_for_analysis_acc, 
+                       formula = accuracy ~ FL * setsize + Error(subID/(FL*setsize)))
+
+summary(aov_results_acc)
+
+effect_sizes_acc <- eta_squared(aov_results_acc)
+print(effect_sizes_acc)
+
+###### NO use color group (non sig)
+filtered_data_acc <- search %>% 
+  filter(setsize != "1 target", group == "Didn't Use", FL != "N/A")
+
+data_for_analysis_acc <- filtered_data_acc %>%
+  group_by(subID, FL, setsize) %>%
+  summarise(accuracy = mean(correct), .groups = 'drop')
+
+aov_results_acc <- aov_car(data = data_for_analysis_acc, 
+                       formula = accuracy ~ FL * setsize + Error(subID/(FL*setsize)))
+
+summary(aov_results_acc)
+
+effect_sizes_acc <- eta_squared(aov_results_acc)
+print(effect_sizes_acc)
+
+################################### RT ##################################
+
+# use color group (main setsize)
+filtered_data_rt <- searchRT %>% 
+  filter(setsize != "1 target", group == "Use Color", FL != "N/A")
+
+data_for_analysis_rt <- filtered_data_rt %>%
+  group_by(subID, FL, setsize) %>%
+  summarise(rt = mean(RT), .groups = 'drop')
+
+
+anova_results_rt <- aov_car(data = data_for_analysis_rt, 
+                         formula = rt ~ FL * setsize + Error(subID / (FL * setsize)))
+summary(anova_results_rt)
+
+effect_sizes_rt <- eta_squared(anova_results_rt)
+print(effect_sizes_rt)
+
+# NO use color group (non sig)
+filtered_data_rt <- searchRT %>% 
+  filter(setsize != "1 target", group == "Didn't Use", FL != "N/A")
+
+data_for_analysis_rt <- filtered_data_rt %>%
+  group_by(subID, FL, setsize) %>%
+  summarise(rt = mean(RT), .groups = 'drop')
+
+
+anova_results_rt <- aov_car(data = data_for_analysis_rt, 
+                         formula = rt ~ FL * setsize + Error(subID / (FL * setsize)))
+summary(anova_results_rt)
+
+effect_sizes_rt <- eta_squared(anova_results_rt)
+print(effect_sizes_rt)
+```
+
+# common feature X serial position
+```{r stats test}
+################################## ACC ##################################
+###### use color group (non sig)
+filtered_data_acc <- search %>% 
+  filter(setsize != "1 target", group == "Use Color", FL != "N/A")
+
+data_for_analysis_acc <- filtered_data_acc %>%
+  group_by(subID, common, FL) %>%
+  summarise(accuracy = mean(correct), .groups = 'drop')
+
+aov_results_acc <- aov_car(data = data_for_analysis_acc, 
+                       formula = accuracy ~ FL * common + Error(subID/(FL*common)))
+
+summary(aov_results_acc)
+
+effect_sizes_acc <- eta_squared(aov_results_acc)
+print(effect_sizes_acc)
+
+###### NO use color group (non sig)
+filtered_data_acc <- search %>% 
+  filter(setsize != "1 target", group == "Didn't Use", FL != "N/A")
+
+data_for_analysis_acc <- filtered_data_acc %>%
+  group_by(subID, FL, common) %>%
+  summarise(accuracy = mean(correct), .groups = 'drop')
+
+aov_results_acc <- aov_car(data = data_for_analysis_acc, 
+                       formula = accuracy ~ FL * common + Error(subID/(FL*common)))
+
+summary(aov_results_acc)
+
+effect_sizes_acc <- eta_squared(aov_results_acc)
+print(effect_sizes_acc)
+
+
+################################### RT ##################################
+
+# use color group (main common, main serial pos, interaction)
+filtered_data_rt <- searchRT %>% 
+  filter(setsize != "1 target", group == "Use Color", FL != "N/A")
+
+data_for_analysis_rt <- filtered_data_rt %>%
+  group_by(subID, FL, common) %>%
+  summarise(rt = mean(RT), .groups = 'drop')
+
+
+anova_results_rt <- aov_car(data = data_for_analysis_rt, 
+                         formula = rt ~ FL * common + Error(subID / (FL * common)))
+summary(anova_results_rt)
+
+effect_sizes_rt <- eta_squared(anova_results_rt)
+print(effect_sizes_rt)
+
+#### a post-hoc needed
+emm = emmeans(anova_results_rt, specs = ~ FL * common)
+pairwise_comp = pairs(emm)
+print(pairwise_comp)
+pairwise_comp_adj = pairs(emm, adjust = "bonferroni")
+print(pairwise_comp_adj)
+
+
+# NO use color group (non sig)
+filtered_data_rt <- searchRT %>% 
+  filter(setsize != "1 target", group == "Didn't Use", FL != "N/A")
+
+data_for_analysis_rt <- filtered_data_rt %>%
+  group_by(subID, FL, common) %>%
+  summarise(rt = mean(RT), .groups = 'drop')
+
+
+anova_results_rt <- aov_car(data = data_for_analysis_rt, 
+                         formula = rt ~ FL * common + Error(subID / (FL * common)))
+summary(anova_results_rt)
+
+effect_sizes_rt <- eta_squared(anova_results_rt)
+print(effect_sizes_rt)
+```
+
+# common feature X serial position X set-size
+```{r stats test}
+################################## ACC ##################################
+###### use color group (non sig)
+filtered_data_acc <- search %>% 
+  filter(setsize != "1 target", group == "Use Color", FL != "N/A")
+
+data_for_analysis_acc <- filtered_data_acc %>%
+  group_by(subID, common, FL, setsize) %>%
+  summarise(accuracy = mean(correct), .groups = 'drop')
+
+aov_results_acc <- aov_car(data = data_for_analysis_acc, 
+                       formula = accuracy ~ FL * common * setsize + Error(subID/(FL*common*setsize)))
+
+summary(aov_results_acc)
+
+effect_sizes_acc <- eta_squared(aov_results_acc)
+print(effect_sizes_acc)
+
+###### NO use color group (non sig)
+filtered_data_acc <- search %>% 
+  filter(setsize != "1 target", group == "Didn't Use", FL != "N/A")
+
+data_for_analysis_acc <- filtered_data_acc %>%
+  group_by(subID, FL, common, setsize) %>%
+  summarise(accuracy = mean(correct), .groups = 'drop')
+
+aov_results_acc <- aov_car(data = data_for_analysis_acc, 
+                       formula = accuracy ~ FL * common * setsize + Error(subID/(FL*common*setsize)))
+
+summary(aov_results_acc)
+
+effect_sizes_acc <- eta_squared(aov_results_acc)
+print(effect_sizes_acc)
+
+#### post-hoc needed
+#for common main effect
+library(emmeans)
+# Assuming aov_results_acc is your ANOVA model
+emmeans_results <- emmeans(aov_results_acc, ~ common)
+# Pairwise comparisons with Bonferroni adjustment
+pairwise_comparisons <- pairs(emmeans_results, adjust = "bonferroni")
+print(pairwise_comparisons)
+
+# calculate effect size of t-test
+library(effsize)
+# Assuming you have two groups for comparison (replace with your actual data)
+group1 <- data_for_analysis_acc[data_for_analysis_acc$common == "common", "accuracy"]
+group2 <- data_for_analysis_acc[data_for_analysis_acc$common == "no common", "accuracy"]
+# Convert the 'accuracy' column of the tibble to a numeric vector
+group1_vector <- as.numeric(group1$accuracy)
+# Do the same for group2
+group2_vector <- as.numeric(group2$accuracy)
+# Now calculate Cohen's d
+d <- cohen.d(group1_vector, group2_vector)
+print(d)
+
+################################### RT ##################################
+
+# use color group (main common, main setsize, marginal sig main serial pos)
+filtered_data_rt <- searchRT %>% 
+  filter(setsize != "1 target", group == "Use Color", FL != "N/A")
+
+data_for_analysis_rt <- filtered_data_rt %>%
+  group_by(subID, FL, common, setsize) %>%
+  summarise(rt = mean(RT), .groups = 'drop')
+
+
+anova_results_rt <- aov_car(data = data_for_analysis_rt, 
+                         formula = rt ~ FL * common *setsize + Error(subID / (FL * common *setsize)))
+summary(anova_results_rt)
+
+effect_sizes_rt <- eta_squared(anova_results_rt)
+print(effect_sizes_rt)
+
+#### a post-hoc needed
+emm = emmeans(anova_results_rt, specs = ~ FL * common * setsize)
+pairwise_comp = pairs(emm)
+print(pairwise_comp)
+pairwise_comp_adj = pairs(emm, adjust = "bonferroni")
+print(pairwise_comp_adj)
+
+#### post-hoc needed
+
+#for common main effect
+emmeans_results <- emmeans(anova_results_rt, ~ common)
+# Pairwise comparisons with Bonferroni adjustment
+pairwise_comparisons <- pairs(emmeans_results, adjust = "bonferroni")
+print(pairwise_comparisons)
+
+# calculate effect size of t-test
+library(effsize)
+# Assuming you have two groups for comparison (replace with your actual data)
+group1 <- data_for_analysis_rt[data_for_analysis_rt$common == "common", "rt"]
+group2 <- data_for_analysis_rt[data_for_analysis_rt$common == "no common", "rt"]
+# Convert the 'accuracy' column of the tibble to a numeric vector
+group1_vector <- as.numeric(group1$rt)
+# Do the same for group2
+group2_vector <- as.numeric(group2$rt)
+# Now calculate Cohen's d
+d <- cohen.d(group1_vector, group2_vector)
+print(d)
+
+##for setsize main effect
+emmeans_results <- emmeans(anova_results_rt, ~ setsize)
+# Pairwise comparisons with Bonferroni adjustment
+pairwise_comparisons <- pairs(emmeans_results, adjust = "bonferroni")
+print(pairwise_comparisons)
+
+# calculate effect size of t-test
+library(effsize)
+# Assuming you have two groups for comparison (replace with your actual data)
+group1 <- data_for_analysis_rt[data_for_analysis_rt$setsize == "3 targets", "rt"]
+group2 <- data_for_analysis_rt[data_for_analysis_rt$setsize == "5 targets", "rt"]
+# Convert the 'rt' column of the tibble to a numeric vector
+group1_vector <- as.numeric(group1$rt)
+# Do the same for group2
+group2_vector <- as.numeric(group2$rt)
+# Now calculate Cohen's d
+d <- cohen.d(group1_vector, group2_vector)
+print(d)
+
+##for FL main effect
+emmeans_results <- emmeans(anova_results_rt, ~ FL)
+# Pairwise comparisons with Bonferroni adjustment
+pairwise_comparisons <- pairs(emmeans_results, adjust = "bonferroni")
+print(pairwise_comparisons)
+
+# calculate effect size of t-test
+library(effsize)
+# Assuming you have two groups for comparison (replace with your actual data)
+group1 <- data_for_analysis_rt[data_for_analysis_rt$FL == "FL", "rt"]
+group2 <- data_for_analysis_rt[data_for_analysis_rt$FL == "NonFL", "rt"]
+# Convert the 'rt' column of the tibble to a numeric vector
+group1_vector <- as.numeric(group1$rt)
+# Do the same for group2
+group2_vector <- as.numeric(group2$rt)
+# Now calculate Cohen's d
+d <- cohen.d(group1_vector, group2_vector)
+print(d)
+
+#### for common:FL interaction
+emm = emmeans(anova_results_rt, specs = ~ FL * common)
+pairwise_comp = pairs(emm)
+print(pairwise_comp)
+pairwise_comp_adj = pairs(emm, adjust = "bonferroni")
+print(pairwise_comp_adj)
+# Assuming 'data_for_analysis_acc' is your data frame
+
+# Filter data for 'FL' level
+data_FL <- filter(data_for_analysis_rt, FL == "FL")
+
+# Perform t-test for 'FL' within 'common'
+t_test_FL <- t.test(rt ~ common, data = data_FL)
+
+# Filter data for 'no FL' level
+data_NonFL <- filter(data_for_analysis_rt, FL == "NonFL")
+
+# Perform t-test for 'setsize' within 'no common'
+t_test_NonFL <- t.test(rt ~ common, data = data_NonFL)
+
+# Print the results
+print(t_test_FL)
+print(t_test_NonFL)
+
+
+# NO use color group (sig FL:setsize interaction)
+filtered_data_rt <- searchRT %>% 
+  filter(setsize != "1 target", group == "Didn't Use", FL != "N/A")
+
+data_for_analysis_rt <- filtered_data_rt %>%
+  group_by(subID, FL, common, setsize) %>%
+  summarise(rt = mean(RT), .groups = 'drop')
+
+
+anova_results_rt <- aov_car(data = data_for_analysis_rt, 
+                         formula = rt ~ FL * common * setsize+ Error(subID / (FL * common *setsize)))
+summary(anova_results_rt)
+
+effect_sizes_rt <- eta_squared(anova_results_rt)
+print(effect_sizes_rt)
+
+#### a post-hoc needed
+emm = emmeans(anova_results_rt, specs = ~ setsize*common)
+pairwise_comp = pairs(emm)
+print(pairwise_comp)
+pairwise_comp_adj = pairs(emm, adjust = "bonferroni")
+print(pairwise_comp_adj)
+
+#### post-hoc needed
+#for common main effect
+emmeans_results <- emmeans(anova_results_rt, ~ common)
+# Pairwise comparisons with Bonferroni adjustment
+pairwise_comparisons <- pairs(emmeans_results, adjust = "bonferroni")
+print(pairwise_comparisons)
+
+# calculate effect size of t-test
+library(effsize)
+# Assuming you have two groups for comparison (replace with your actual data)
+group1 <- data_for_analysis_rt[data_for_analysis_rt$common == "common", "rt"]
+group2 <- data_for_analysis_rt[data_for_analysis_rt$common == "no common", "rt"]
+# Convert the 'accuracy' column of the tibble to a numeric vector
+group1_vector <- as.numeric(group1$rt)
+# Do the same for group2
+group2_vector <- as.numeric(group2$rt)
+# Now calculate Cohen's d
+d <- cohen.d(group1_vector, group2_vector)
+print(d)
+
+##for setsize main effect
+emmeans_results <- emmeans(anova_results_rt, ~ setsize)
+# Pairwise comparisons with Bonferroni adjustment
+pairwise_comparisons <- pairs(emmeans_results, adjust = "bonferroni")
+print(pairwise_comparisons)
+
+# calculate effect size of t-test
+library(effsize)
+# Assuming you have two groups for comparison (replace with your actual data)
+group1 <- data_for_analysis_rt[data_for_analysis_rt$setsize == "3 targets", "rt"]
+group2 <- data_for_analysis_rt[data_for_analysis_rt$setsize == "5 targets", "rt"]
+# Convert the 'rt' column of the tibble to a numeric vector
+group1_vector <- as.numeric(group1$rt)
+# Do the same for group2
+group2_vector <- as.numeric(group2$rt)
+# Now calculate Cohen's d
+d <- cohen.d(group1_vector, group2_vector)
+print(d)
+
+```
+
+
+# common feature X between groups X set-size
+```{r stats test}
+################################## ACC ##################################
+filtered_data_acc <- search %>% 
+  filter(setsize != "1 target", FL != "N/A", group != "Unsure")
+
+library(afex)
+
+# Aggregating your data
+data_for_analysis_acc <- filtered_data_acc %>%
+  group_by(subID, common, group, setsize) %>%
+  summarise(accuracy = mean(correct), .groups = 'drop')
+
+# Running the ANOVA
+aov_results_acc <- aov_ez(data = data_for_analysis_acc, 
+                          dv = "accuracy", 
+                          between = c("group"), 
+                          within = c("common", "setsize"), 
+                          id = "subID", 
+                          type = 3)
+
+# Viewing the summary
+summary(aov_results_acc)
+
+# Calculating effect sizes
+effect_sizes_acc <- eta_squared(aov_results_acc)
+print(effect_sizes_acc)
+
+# Post-hoc Analysis
+emm = emmeans(aov_results_acc, specs = ~ group*common)
+pairwise_comp = pairs(emm)
+print(pairwise_comp)
+pairwise_comp_adj = pairs(emm, adjust = "bonferroni")
+print(pairwise_comp_adj)
+
+# Filter for the 'no common' group
+no_common_data <- data_for_analysis_acc[data_for_analysis_acc$group == "Didn't Use", ]
+
+# Extract 'rt' for 'FL' and 'NonFL' within the 'no common' group
+group1_vector <- no_common_data[no_common_data$common == "common", "accuracy"]
+group2_vector <- no_common_data[no_common_data$common == "no common", "accuracy"]
+# Convert the 'rt' column of the tibble to a numeric vector
+group1_vector <- as.numeric(group1_vector$accuracy)
+# Do the same for group2
+group2_vector <- as.numeric(group2_vector$accuracy)
+# Now calculate Cohen's d
+d <- cohen.d(group1_vector, group2_vector)
+print(d)
+
+################################### RT ##################################
+
+library(afex)
+library(emmeans)
+
+# Data Preparation
+filtered_data_rt <- search %>% 
+  filter(setsize != "1 target", group != "Unsure", FL != "N/A", correct == 1) %>%
+  #filter(group != "Unsure", FL != "N/A", correct == 1)
+
+data_for_analysis_rt <- filtered_data_rt %>%
+  group_by(subID, group, common, setsize) %>%
+  summarise(rt = mean(RT), .groups = 'drop')
+
+# ANOVA Analysis
+anova_results_rt <- aov_ez(data = data_for_analysis_rt, 
+                           dv = "rt", 
+                           id = "subID", 
+                           between = c("group"), 
+                           within = c("common", "setsize"), 
+                           type = 3)
+summary(anova_results_rt)
+
+anova_results_pes <- aov_car(rt ~ group * common * setsize + Error(subID/(common*setsize)), 
+                             data = data_for_analysis_rt, 
+                             type = 3, 
+                             return = "Anova")
+# Effect size
+library(effectsize)
+eta_squared(anova_results_rt, partial = TRUE)
+
+
+# Post-hoc Analysis
+emm = emmeans(anova_results_rt, specs = ~ setsize)
+pairwise_comp = pairs(emm)
+print(pairwise_comp)
+pairwise_comp_adj = pairs(emm, adjust = "bonferroni")
+print(pairwise_comp_adj)
+```
+
+
+```{r whether the two groups different in the set size 1 condition for common vs unique}
+library(dplyr)
+library(effsize)  # for Cohen's d
+
+# Step 1: Data Preparation (you already have this)
+filtered_data_rt <- search %>% 
+  filter(setsize == "1 target", group != "Unsure", correct == 1)
+
+data_for_analysis_rt <- filtered_data_rt %>%
+  group_by(subID, group) %>%
+  summarise(rt = mean(RT), .groups = 'drop')
+
+# Step 2: Summary stats for each group
+summary_stats <- data_for_analysis_rt %>%
+  group_by(group) %>%
+  summarise(
+    mean_rt = mean(rt),
+    sd_rt = sd(rt),
+    n = n(),
+    .groups = 'drop'
+  )
+
+print(summary_stats)
+
+# Step 3: t-test
+t_test_result <- t.test(rt ~ group, data = data_for_analysis_rt, var.equal = TRUE)
+print(t_test_result)
+
+# Step 4: Effect size - Cohen's d
+cohen_d_result <- cohen.d(rt ~ group, data = data_for_analysis_rt)
+print(cohen_d_result)
+
+
+```
+
+# 4 factors together
+```{r}
+################################## ACC ##################################
+filtered_data_acc <- search %>% 
+  filter(setsize != "1 target", FL != "N/A", group != "Unsure")
+
+library(afex)
+
+# Aggregating your data
+data_for_analysis_acc <- filtered_data_acc %>%
+  group_by(subID, common, group, FL, setsize) %>%
+  summarise(accuracy = mean(correct), .groups = 'drop')
+
+# Running the ANOVA
+aov_results_acc <- aov_ez(data = data_for_analysis_acc, 
+                          dv = "accuracy", 
+                          between = c("group"), 
+                          within = c("common", "setsize", "FL"), 
+                          id = "subID", 
+                          type = 3)
+
+# Viewing the summary
+summary(aov_results_acc)
+
+# Calculating effect sizes
+effect_sizes_acc <- eta_squared(aov_results_acc)
+print(effect_sizes_acc)
+
+# Post-hoc Analysis
+emm = emmeans(aov_results_acc, specs = ~ common * group)
+pairwise_comp = pairs(emm)
+print(pairwise_comp)
+pairwise_comp_adj = pairs(emm, adjust = "bonferroni")
+print(pairwise_comp_adj)
+
+################################### RT ##################################
+
+library(afex)
+library(emmeans)
+
+# Data Preparation
+filtered_data_rt <- searchRT %>% 
+  filter(setsize != "1 target", group != "Unsure", FL != "N/A")
+
+data_for_analysis_rt <- filtered_data_rt %>%
+  group_by(subID, group, common, FL, setsize) %>%
+  summarise(rt = mean(RT), .groups = 'drop')
+
+# ANOVA Analysis
+anova_results_rt <- aov_ez(data = data_for_analysis_rt, 
+                           dv = "rt", 
+                           id = "subID", 
+                           between = c("group"), 
+                           within = c("common", "setsize", "FL"), 
+                           type = 3)
+summary(anova_results_rt)
+
+# Effect Sizes
+effect_sizes_rt <- eta_squared(anova_results_rt)
+print(effect_sizes_rt)
+
+# Post-hoc Analysis
+emm = emmeans(anova_results_rt, specs = ~ FL * common)
+pairwise_comp = pairs(emm)
+print(pairwise_comp)
+pairwise_comp_adj = pairs(emm, adjust = "bonferroni")
+print(pairwise_comp_adj)
+```
+
+
+```{r calculate RTsummary and ACCsumarry}
+cbp <- c("#253D8C", "#BAB3B7","#B73508", "#F5D44B", "#FFFFFF") 
+
+
+## Calculates mean, sd, se and IC for bar graph
+# Need to change group_by when graph
+
+######### RT #############
+ rtsummary <- searchRT %>% filter(setsize!= "1 target", FL!= "N/A", group!="Unsure") %>%
+   group_by(common, FL, setsize, group) %>%
+   summarise(
+     n = n(),
+     sd = sd(RT, na.rm = TRUE),
+     rt = mean(RT)
+   )%>%
+   mutate(se=sd/sqrt(n))  %>%
+   mutate(ci=se * qt((1-0.05)/2 + .5, n-1)) %>%
+   mutate(transrt = rt-1000)
+ 
+ ######### ACC ##############
+ accsummary <- search %>% filter(setsize!= "1 target",FL!= "N/A",group!="Unsure") %>%
+  group_by(common, FL, setsize, group) %>%
+  summarise(
+    n = n(),
+    sd = sd(correct, na.rm = TRUE),
+    acc = mean(correct)
+  )%>%
+  mutate(se=sd/sqrt(n))  %>%
+  mutate(ci=se * qt((1-0.05)/2 + .5, n-1)) %>%
+  mutate(transacc = acc - 0.7)
+```
+
+ 
+# graph for setsize X common
+```{r summarize draw at once}
+ ### RT 
+ rtsummary <- search %>% filter(setsize!= "1 target", FL!= "N/A", group !="Unsure", correct == 1) %>%
+   group_by(setsize, common) %>%
+   summarise(
+     n = n(),
+     sd = sd(RT, na.rm = TRUE),
+     rt = mean(RT)
+   )%>%
+   mutate(se=sd/sqrt(n))  %>%
+   mutate(ci=se * qt((1-0.05)/2 + .5, n-1)) %>%
+   mutate(transrt = rt-1000)
+ 
+ ######### ACC ##############
+ accsummary <- search %>% filter(setsize!= "1 target",FL!= "N/A",group !="Unsure") %>%
+  group_by(setsize, common) %>%
+  summarise(
+    n = n(),
+    sd = sd(correct, na.rm = TRUE),
+    acc = mean(correct)
+  )%>%
+  mutate(se=sd/sqrt(n))  %>%
+  mutate(ci=se * qt((1-0.05)/2 + .5, n-1)) %>%
+  mutate(transacc = acc - 0.6)
+ 
+ 
+ # Draw RT graph
+rtbar = ggplot(data = rtsummary, aes(x = common, y = transrt, fill = setsize)) + 
+  #facet_wrap(~common,
+            # strip.position = "bottom")  +
+  ylab(NULL)+ 
+   geom_bar(stat="identity", color="black", width = 0.8,
+           position=position_dodge()) +
+  geom_errorbar(aes(ymin=transrt-se, ymax=transrt+se), width=.3, size = 0.5,
+                position=position_dodge(0.8))+ 
+  scale_y_continuous(limits = c(0,600), breaks=seq(0,600,100),
+                     labels=seq(1000,1600,100))+
+  theme_classic() + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        strip.text.y = element_text(size = 21, face = "bold"))+
+  scale_fill_manual(values = cbp)+
+  theme(axis.text.x = element_text(face = "bold", size = 0),
+        axis.title.x = element_blank(),
+        axis.text.y = element_text(face = "bold", size = 17),
+        axis.ticks.x = element_blank(),
+        strip.text.x = element_text(size = 19, face = "bold")) + 
+  theme(legend.position = c(0.65, 0.93), legend.text = element_text(size = 15, face = "bold"), 
+        legend.direction = "horizontal", 
+        legend.spacing = unit(0.3, "cm"), 
+        legend.key.height = unit(0.6, "cm"),
+        legend.key.width = unit(0.4, "cm"),legend.key.size = unit(1, "cm")) +
+  theme(plot.title = element_text(size = 23, face = "bold", hjust = 0.5)) +
+  theme(axis.title.y = element_text(size = 21, face = "bold", margin = margin(r = 5))) +
+  theme(strip.background = element_blank(), strip.placement = "outside", strip.switch.pad.grid = unit(0, "lines"))+
+  ylab("Reaction Time (ms)")+
+  labs(fill = "")+
+  theme(legend.position = "none");rtbar
+
+
+
+# draw acc bargraph
+accbar = ggplot(data = accsummary, aes(x = common, y = transacc, fill = setsize)) + 
+  #facet_wrap(~common,
+             #strip.position = "bottom")  +
+  ylab(NULL)+ 
+   geom_bar(stat="identity", color="black", width = 0.8,
+           position=position_dodge()) +
+  geom_errorbar(aes(ymin=transacc-se, ymax=transacc+se), width=.3, size = 0.5,
+                position=position_dodge(0.8))+ 
+  #geom_errorbar(aes(ymin=acc-ci, ymax=acc+ci), width=.3, size = 0.5,
+               # position=position_dodge(.5))+ 
+  scale_y_continuous(limits = c(0,0.4), breaks=seq(0,0.4,0.1),
+                     labels=seq(0.6,1,0.1)) +
+ theme_classic() + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        strip.text.y = element_text(size = 21, face = "bold"))+
+  scale_fill_manual(values = cbp)+
+  theme(axis.text.x = element_text(face = "bold", size = 0),
+        axis.title.x = element_blank(),
+        axis.text.y = element_text(face = "bold", size = 17),
+        axis.ticks.x = element_blank(),
+        strip.text.x = element_text(size = 19, face = "bold")) + 
+  theme(legend.position = c(0.65, 0.93), legend.text = element_text(size = 15, face = "bold"), 
+        legend.direction = "vertical", 
+        legend.spacing = unit(0.3, "cm"), 
+        legend.key.height = unit(0.6, "cm"),
+        legend.key.width = unit(0.4, "cm"),legend.key.size = unit(1, "cm")) +
+  theme(plot.title = element_text(size = 23, face = "bold", hjust = 0.5)) +
+  theme(axis.title.y = element_text(size = 21, face = "bold", margin = margin(r = 5))) +
+  theme(strip.background = element_blank(), strip.placement = "outside", strip.switch.pad.grid = unit(0, "lines"))+
+  ylab("Accuracy")+
+  labs(fill = "")+
+  theme(
+          plot.title = element_blank());accbar
+
+######### Bind RT and Acc together
+bindbar = plot_grid(rtbar, accbar, labels = "AUTO")
+bindbar
+ggsave("FLCommonGroup.png",bindbar, width = 1500, height = 600, units = "px")
+```
+
+# graph for FL X common
+```{r summarize draw at once}
+ ### RT 
+ rtsummary <- search %>% filter(setsize!= "1 target", FL!= "N/A", group !="Unsure", correct == 1) %>%
+   group_by(FL, common) %>%
+   summarise(
+     n = n(),
+     sd = sd(RT, na.rm = TRUE),
+     rt = mean(RT)
+   )%>%
+   mutate(se=sd/sqrt(n))  %>%
+   mutate(ci=se * qt((1-0.05)/2 + .5, n-1)) %>%
+   mutate(transrt = rt-1000)
+ 
+ ######### ACC ##############
+ accsummary <- search %>% filter(setsize!= "1 target",FL!= "N/A",group !="Unsure") %>%
+  group_by(FL, common) %>%
+  summarise(
+    n = n(),
+    sd = sd(correct, na.rm = TRUE),
+    acc = mean(correct)
+  )%>%
+  mutate(se=sd/sqrt(n))  %>%
+  mutate(ci=se * qt((1-0.05)/2 + .5, n-1)) %>%
+  mutate(transacc = acc - 0.6)
+ 
+ 
+ # Draw RT graph
+rtbar = ggplot(data = rtsummary, aes(x = common, y = transrt, fill = FL)) + 
+  #facet_wrap(~common,
+            # strip.position = "bottom")  +
+  ylab(NULL)+ 
+   geom_bar(stat="identity", color="black", width = 0.8,
+           position=position_dodge()) +
+  geom_errorbar(aes(ymin=transrt-se, ymax=transrt+se), width=.3, size = 0.5,
+                position=position_dodge(0.8))+ 
+  scale_y_continuous(limits = c(0,600), breaks=seq(0,600,100),
+                     labels=seq(1000,1600,100))+
+  theme_classic() + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        strip.text.y = element_text(size = 21, face = "bold"))+
+  scale_fill_manual(values = cbp)+
+  theme(axis.text.x = element_text(face = "bold", size = 0),
+        axis.title.x = element_blank(),
+        axis.text.y = element_text(face = "bold", size = 17),
+        axis.ticks.x = element_blank(),
+        strip.text.x = element_text(size = 19, face = "bold")) + 
+  theme(legend.position = c(0.65, 0.93), legend.text = element_text(size = 15, face = "bold"), 
+        legend.direction = "horizontal", 
+        legend.spacing = unit(0.3, "cm"), 
+        legend.key.height = unit(0.6, "cm"),
+        legend.key.width = unit(0.4, "cm"),legend.key.size = unit(1, "cm")) +
+  theme(plot.title = element_text(size = 23, face = "bold", hjust = 0.5)) +
+  theme(axis.title.y = element_text(size = 21, face = "bold", margin = margin(r = 5))) +
+  theme(strip.background = element_blank(), strip.placement = "outside", strip.switch.pad.grid = unit(0, "lines"))+
+  ylab("Reaction Time (ms)")+
+  labs(fill = "")+
+  theme(legend.position = "none");rtbar
+
+
+
+# draw acc bargraph
+accbar = ggplot(data = accsummary, aes(x = common, y = transacc, fill = FL)) + 
+  #facet_wrap(~common,
+             #strip.position = "bottom")  +
+  ylab(NULL)+ 
+   geom_bar(stat="identity", color="black", width = 0.8,
+           position=position_dodge()) +
+  geom_errorbar(aes(ymin=transacc-se, ymax=transacc+se), width=.3, size = 0.5,
+                position=position_dodge(0.8))+ 
+  #geom_errorbar(aes(ymin=acc-ci, ymax=acc+ci), width=.3, size = 0.5,
+               # position=position_dodge(.5))+ 
+  scale_y_continuous(limits = c(0,0.4), breaks=seq(0,0.4,0.1),
+                     labels=seq(0.6,1,0.1)) +
+ theme_classic() + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        strip.text.y = element_text(size = 21, face = "bold"))+
+  scale_fill_manual(values = cbp)+
+  theme(axis.text.x = element_text(face = "bold", size = 0),
+        axis.title.x = element_blank(),
+        axis.text.y = element_text(face = "bold", size = 17),
+        axis.ticks.x = element_blank(),
+        strip.text.x = element_text(size = 19, face = "bold")) + 
+  theme(legend.position = c(0.65, 0.93), legend.text = element_text(size = 15, face = "bold"), 
+        legend.direction = "vertical", 
+        legend.spacing = unit(0.3, "cm"), 
+        legend.key.height = unit(0.6, "cm"),
+        legend.key.width = unit(0.4, "cm"),legend.key.size = unit(1, "cm")) +
+  theme(plot.title = element_text(size = 23, face = "bold", hjust = 0.5)) +
+  theme(axis.title.y = element_text(size = 21, face = "bold", margin = margin(r = 5))) +
+  theme(strip.background = element_blank(), strip.placement = "outside", strip.switch.pad.grid = unit(0, "lines"))+
+  ylab("Accuracy")+
+  labs(fill = "")+
+  theme(
+          plot.title = element_blank());accbar
+
+######### Bind RT and Acc together
+bindbar = plot_grid(rtbar, accbar, labels = "AUTO")
+bindbar
+ggsave("FLCommonGroup.png",bindbar, width = 1500, height = 600, units = "px")
+```
+
+# graph for setsize X common X group
+```{r summarize draw at once}
+ ### RT 
+ rtsummary <- search %>% filter(setsize!= "1 target", FL!= "N/A", group !="Unsure", correct == 1) %>%
+   group_by(setsize, common) %>%
+   summarise(
+     n = n(),
+     sd = sd(RT, na.rm = TRUE),
+     rt = mean(RT)
+   )%>%
+   mutate(se=sd/sqrt(n))  %>%
+   mutate(ci=se * qt((1-0.05)/2 + .5, n-1)) %>%
+   mutate(transrt = rt-1000)
+ 
+ ######### ACC ##############
+ accsummary <- search %>% filter(setsize!= "1 target",FL!= "N/A",group !="Unsure") %>%
+  group_by(setsize, common) %>%
+  summarise(
+    n = n(),
+    sd = sd(correct, na.rm = TRUE),
+    acc = mean(correct)
+  )%>%
+  mutate(se=sd/sqrt(n))  %>%
+  mutate(ci=se * qt((1-0.05)/2 + .5, n-1)) %>%
+  mutate(transacc = acc - 0.6)
+ 
+ 
+ # Draw RT graph
+rtbar = ggplot(data = rtsummary, aes(x = common, y = transrt, fill = setsize)) + 
+  #facet_wrap(~common,
+            # strip.position = "bottom")  +
+  ylab(NULL)+ 
+   geom_bar(stat="identity", color="black", width = 0.8,
+           position=position_dodge()) +
+  geom_errorbar(aes(ymin=transrt-se, ymax=transrt+se), width=.3, size = 0.5,
+                position=position_dodge(0.8))+ 
+  scale_y_continuous(limits = c(0,600), breaks=seq(0,600,100),
+                     labels=seq(1000,1600,100))+
+  theme_classic() + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        strip.text.y = element_text(size = 21, face = "bold"))+
+  scale_fill_manual(values = cbp)+
+  theme(axis.text.x = element_text(face = "bold", size = 0),
+        axis.title.x = element_blank(),
+        axis.text.y = element_text(face = "bold", size = 17),
+        axis.ticks.x = element_blank(),
+        strip.text.x = element_text(size = 19, face = "bold")) + 
+  theme(legend.position = c(0.65, 0.93), legend.text = element_text(size = 15, face = "bold"), 
+        legend.direction = "horizontal", 
+        legend.spacing = unit(0.3, "cm"), 
+        legend.key.height = unit(0.6, "cm"),
+        legend.key.width = unit(0.4, "cm"),legend.key.size = unit(1, "cm")) +
+  theme(plot.title = element_text(size = 23, face = "bold", hjust = 0.5)) +
+  theme(axis.title.y = element_text(size = 21, face = "bold", margin = margin(r = 5))) +
+  theme(strip.background = element_blank(), strip.placement = "outside", strip.switch.pad.grid = unit(0, "lines"))+
+  ylab("Reaction Time (ms)")+
+  labs(fill = "")+
+  theme(legend.position = "none");rtbar
+
+
+
+# draw acc bargraph
+accbar = ggplot(data = accsummary, aes(x = common, y = transacc, fill = setsize)) + 
+  #facet_wrap(~common,
+             #strip.position = "bottom")  +
+  ylab(NULL)+ 
+   geom_bar(stat="identity", color="black", width = 0.8,
+           position=position_dodge()) +
+  geom_errorbar(aes(ymin=transacc-se, ymax=transacc+se), width=.3, size = 0.5,
+                position=position_dodge(0.8))+ 
+  #geom_errorbar(aes(ymin=acc-ci, ymax=acc+ci), width=.3, size = 0.5,
+               # position=position_dodge(.5))+ 
+  scale_y_continuous(limits = c(0,0.4), breaks=seq(0,0.4,0.1),
+                     labels=seq(0.6,1,0.1)) +
+ theme_classic() + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        strip.text.y = element_text(size = 21, face = "bold"))+
+  scale_fill_manual(values = cbp)+
+  theme(axis.text.x = element_text(face = "bold", size = 0),
+        axis.title.x = element_blank(),
+        axis.text.y = element_text(face = "bold", size = 17),
+        axis.ticks.x = element_blank(),
+        strip.text.x = element_text(size = 19, face = "bold")) + 
+  theme(legend.position = c(0.65, 0.93), legend.text = element_text(size = 15, face = "bold"), 
+        legend.direction = "vertical", 
+        legend.spacing = unit(0.3, "cm"), 
+        legend.key.height = unit(0.6, "cm"),
+        legend.key.width = unit(0.4, "cm"),legend.key.size = unit(1, "cm")) +
+  theme(plot.title = element_text(size = 23, face = "bold", hjust = 0.5)) +
+  theme(axis.title.y = element_text(size = 21, face = "bold", margin = margin(r = 5))) +
+  theme(strip.background = element_blank(), strip.placement = "outside", strip.switch.pad.grid = unit(0, "lines"))+
+  ylab("Accuracy")+
+  labs(fill = "")+
+  theme(
+          plot.title = element_blank());accbar
+
+######### Bind RT and Acc together
+bindbar = plot_grid(rtbar, accbar, labels = "AUTO")
+bindbar
+ggsave("FLCommonGroup.png",bindbar, width = 1500, height = 600, units = "px")
+```
+ 
+# Graph for 2X2 + groups
+ 
+```{r summarize draw at once}
+ ### RT 
+ rtsummary <- search %>% filter(setsize!= "1 target", FL!= "N/A", group !="Unsure", correct == 1) %>%
+   group_by(FL, setsize, common) %>%
+   summarise(
+     n = n(),
+     sd = sd(RT, na.rm = TRUE),
+     rt = mean(RT)
+   )%>%
+   mutate(se=sd/sqrt(n))  %>%
+   mutate(ci=se * qt((1-0.05)/2 + .5, n-1)) %>%
+   mutate(transrt = rt-1000)
+ 
+ ######### ACC ##############
+ accsummary <- search %>% filter(setsize!= "1 target",FL!= "N/A",group !="Unsure") %>%
+  group_by(FL, setsize, common) %>%
+  summarise(
+    n = n(),
+    sd = sd(correct, na.rm = TRUE),
+    acc = mean(correct)
+  )%>%
+  mutate(se=sd/sqrt(n))  %>%
+  mutate(ci=se * qt((1-0.05)/2 + .5, n-1)) %>%
+  mutate(transacc = acc - 0.7)
+ 
+ 
+ # Draw RT graph
+rtbar = ggplot(data = rtsummary, aes(x = setsize, y = transrt, fill = FL)) + 
+  facet_wrap(~common,
+             strip.position = "bottom")  +
+  ylab(NULL)+ 
+   geom_bar(stat="identity", color="black", width = 0.8,
+           position=position_dodge()) +
+  geom_errorbar(aes(ymin=transrt-se, ymax=transrt+se), width=.3, size = 0.5,
+                position=position_dodge(0.8))+ 
+  scale_y_continuous(limits = c(0,600), breaks=seq(0,600,100),
+                     labels=seq(1000,1600,100))+
+  theme_classic() + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        strip.text.y = element_text(size = 21, face = "bold"))+
+  scale_fill_manual(values = cbp)+
+  theme(axis.text.x = element_text(face = "bold", size = 0),
+        axis.title.x = element_blank(),
+        axis.text.y = element_text(face = "bold", size = 17),
+        axis.ticks.x = element_blank(),
+        strip.text.x = element_text(size = 19, face = "bold")) + 
+  theme(legend.position = c(0.65, 0.93), legend.text = element_text(size = 15, face = "bold"), 
+        legend.direction = "vertical", 
+        legend.spacing = unit(0.3, "cm"), 
+        legend.key.height = unit(0.6, "cm"),
+        legend.key.width = unit(0.4, "cm"),legend.key.size = unit(1, "cm")) +
+  theme(plot.title = element_text(size = 23, face = "bold", hjust = 0.5)) +
+  theme(axis.title.y = element_text(size = 21, face = "bold", margin = margin(r = 5))) +
+  theme(strip.background = element_blank(), strip.placement = "outside", strip.switch.pad.grid = unit(0, "lines"))+
+  ylab("Reaction Time (ms)")+
+  labs(fill = "");rtbar
+
+
+
+# draw acc bargraph
+accbar = ggplot(data = accsummary, aes(x = setsize, y = acc, fill = FL)) + 
+  facet_wrap(~common,
+             strip.position = "bottom")  +
+  ylab(NULL)+ 
+   geom_bar(stat="identity", color="black", width = 0.8,
+           position=position_dodge()) +
+  geom_errorbar(aes(ymin=acc-se, ymax=acc+se), width=.3, size = 0.5,
+                position=position_dodge(0.8))+ 
+  #geom_errorbar(aes(ymin=acc-ci, ymax=acc+ci), width=.3, size = 0.5,
+               # position=position_dodge(.5))+ 
+  scale_y_continuous(limits = c(0,1.1))+#, breaks=seq(0,0.3,0.05),
+                     #labels=seq(0.7,1,0.05)) +
+ theme_classic() + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        strip.text.y = element_text(size = 21, face = "bold"))+
+  scale_fill_manual(values = cbp)+
+  theme(axis.text.x = element_text(face = "bold", size = 0),
+        axis.title.x = element_blank(),
+        axis.text.y = element_text(face = "bold", size = 17),
+        axis.ticks.x = element_blank(),
+        strip.text.x = element_text(size = 19, face = "bold")) + 
+  theme(legend.position = c(0.65, 0.93), legend.text = element_text(size = 15, face = "bold"), 
+        legend.direction = "horizontal", 
+        legend.spacing = unit(0.3, "cm"), 
+        legend.key.height = unit(0.6, "cm"),
+        legend.key.width = unit(0.4, "cm"),legend.key.size = unit(1, "cm")) +
+  theme(plot.title = element_text(size = 23, face = "bold", hjust = 0.5)) +
+  theme(axis.title.y = element_text(size = 21, face = "bold", margin = margin(r = 5))) +
+  theme(strip.background = element_blank(), strip.placement = "outside", strip.switch.pad.grid = unit(0, "lines"))+
+  ylab("Accuracy")+
+  labs(fill = "")+
+  theme(
+          plot.title = element_blank());accbar
+
+######### Bind RT and Acc together
+bindbar = plot_grid(rtbar, accbar, labels = "AUTO")
+bindbar
+ggsave("FLCommonGroup.png",bindbar, width = 1500, height = 600, units = "px")
+```
+
+### Graph for 2X2X + groups
+```{r RT bar}
+cbp <- c("#253D8C", "#BAB3B7","#B73508", "#F5D44B", "#FFFFFF") 
+## Calculates mean, sd, se and IC
+ rtsummary <- search %>% filter(setsize!= "1 target", FL!= "N/A", group != "Unsure", correct == 1) %>%
+   group_by(group, common) %>%
+   summarise(
+     n = n(),
+     sd = sd(RT, na.rm = TRUE),
+     rt = mean(RT)
+   )%>%
+   mutate(se=sd/sqrt(n))  %>%
+   mutate(ci=se * qt((1-0.05)/2 + .5, n-1)) %>%
+   mutate(transrt = rt-1000)
+ 
+ accsummary <- search %>% filter(setsize!= "1 target", FL!= "N/A", group != "Unsure") %>%
+   group_by(group, common) %>%
+   summarise(
+     n = n(),
+     sd = sd(correct, na.rm = TRUE),
+     acc = mean(correct)
+   )%>%
+   mutate(se=sd/sqrt(n))  %>%
+   mutate(ci=se * qt((1-0.05)/2 + .5, n-1)) 
+ 
+ # Draw RT graph
+rtbar = ggplot(data = rtsummary, aes(x = common, y = transrt, fill = group)) + 
+  #facet_wrap(~group, strip.position = "bottom") +
+  scale_fill_manual(values = cbpp)+
+  ylab(NULL)+ 
+   geom_bar(stat="identity", color="black", width = 0.8,
+           position=position_dodge()) +
+  geom_errorbar(aes(ymin=transrt-se, ymax=transrt+se), width=.3, size = 0.5,
+                position=position_dodge(0.8))+ 
+  scale_y_continuous(limits = c(0,600), breaks=seq(0,600,100),
+                     labels=seq(1000,1600,100))+
+  theme_classic() + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        strip.text.y = element_text(size = 17, face = "bold"))+
+  scale_fill_manual(values = cbp)+
+  theme(axis.text.x = element_text(face = "bold", size = 13),
+        axis.title.x = element_blank(),
+        axis.text.y = element_text(face = "bold", size = 15),
+        axis.ticks.x = element_blank(),
+        strip.text.x = element_text(size = 15, face = "bold")) + 
+  theme(legend.position = c(0.65, 0.93), legend.text = element_text(size = 11, face = "bold"), 
+        legend.direction = "vertical", 
+        legend.spacing = unit(0.3, "cm"), 
+        legend.key.height = unit(0.6, "cm"),
+        legend.key.width = unit(0.4, "cm"),legend.key.size = unit(1, "cm")) +
+  theme(plot.title = element_text(size = 19, face = "bold", hjust = 0.5)) +
+  theme(axis.title.y = element_text(size = 17, face = "bold", margin = margin(r = 5))) +
+  theme(strip.background = element_blank(), strip.placement = "outside", strip.switch.pad.grid = unit(0, "lines"))+
+  ylab("Reaction Time (ms)")+
+  labs(fill = "");rtbar
+
+accbar <- ggplot(data = accsummary, aes(x = common, y = acc, fill = group)) + 
+ # facet_wrap(~group, strip.position = "bottom") +
+  geom_bar(stat = "identity", color = "black", width = 0.8, position = position_dodge(0.8)) +
+  geom_errorbar(aes(ymin = acc - ci, ymax = acc + ci), width = .3, linewidth = 0.5, position = position_dodge(0.8)) + 
+  scale_y_continuous(limits = c(0,1.1)) +
+  theme_classic() + 
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    strip.text.y = element_text(size = 17, face = "bold")
+  ) +
+  scale_fill_manual(values = cbp) +
+  theme(
+    axis.text.x = element_text(face = "bold", size = 12),
+    axis.title.x = element_blank(),
+    axis.text.y = element_text(face = "bold", size = 15),
+    axis.ticks.x = element_blank(),
+    strip.text.x = element_text(size = 12, face = "bold")
+  ) + 
+  theme(
+    legend.position = "none") +
+  theme(
+    plot.title = element_text(size = 19, face = "bold", hjust = 0.5),
+    axis.title.y = element_text(size = 17, face = "bold", margin = margin(r = 5)),
+    strip.background = element_blank(),
+    strip.placement = "outside",
+    strip.switch.pad.grid = unit(0, "lines")
+  ) +
+  ylab("Accuracy") +
+  labs(fill = "");accbar
+
+######### Bind RT and Acc together
+bindbar = plot_grid(rtbar, accbar, labels = "AUTO")
+bindbar
+
+```
+
+#Graph for commonXFL with setsize as group.
+```{r}
+############# Graph
+# RT
+## Calculates mean, sd, se and IC
+ rtsummary <- search %>% filter(setsize!= "1 target", FL!= "N/A", group != "Unsure", correct == 1) %>%
+   group_by(common, FL, setsize) %>%
+   summarise(
+     n = n(),
+     sd = sd(RT, na.rm = TRUE),
+     rt = mean(RT)
+   )%>%
+   mutate(se=sd/sqrt(n))  %>%
+   mutate(ci=se * qt((1-0.05)/2 + .5, n-1)) %>%
+   mutate(transrt = rt-1000)
+
+
+# Define the color panel with 6 different colors
+cpb <- c( "#253D8C", "#BAB3B7",  "#7586c2", "lightgrey")
+
+# Create the plot
+rtbar <- ggplot(data = rtsummary, aes(x = FL, y = transrt, fill = interaction(common, setsize))) + 
+  facet_wrap(~ setsize, strip.position = "bottom") + 
+  geom_bar(stat = "identity", color = "black", width = 0.8, position = position_dodge(0.8)) +
+  geom_errorbar(aes(ymin = transrt - ci, ymax = transrt + ci), width = .3, linewidth = 0.5, position = position_dodge(0.8)) + 
+  scale_y_continuous(limits = c(0, 600), breaks = seq(0, 600, 100), labels = seq(1000, 1600, 100)) +
+  theme_classic() + 
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    strip.text.y = element_text(size = 17, face = "bold")
+  ) +
+  scale_fill_manual(values = cpb) +
+  theme(
+    axis.text.x = element_text(face = "bold", size = 12),
+    axis.title.x = element_blank(),
+    axis.text.y = element_text(face = "bold", size = 15),
+    axis.ticks.x = element_blank(),
+    strip.text.x = element_text(size = 12, face = "bold")
+  ) + 
+  theme(
+    legend.position = "none") +
+  theme(
+    plot.title = element_text(size = 19, face = "bold", hjust = 0.5),
+    axis.title.y = element_text(size = 17, face = "bold", margin = margin(r = 5)),
+    strip.background = element_blank(),
+    strip.placement = "outside",
+    strip.switch.pad.grid = unit(0, "lines")
+  ) +
+  ylab("Reaction Time (ms)") +
+  labs(fill = "");rtbar
+
+
+# Acc
+## Calculates mean, sd, se and IC
+accsummary <- search %>% filter(setsize!= "1 target", FL!= "N/A", group != "Unsure") %>%
+   group_by(common, FL, setsize) %>%
+   summarise(
+     n = n(),
+     sd = sd(correct, na.rm = TRUE),
+     acc = mean(correct)
+   )%>%
+   mutate(se=sd/sqrt(n))  %>%
+   mutate(ci=se * qt((1-0.05)/2 + .5, n-1)) 
+
+
+# Define the color panel with 6 different colors
+cpb <- c( "#253D8C", "#BAB3B7",  "#7586c2", "lightgrey")
+
+# Create the plot
+accbar <- ggplot(data = accsummary, aes(x = FL, y = acc, fill = interaction(common, setsize))) + 
+  facet_wrap(~ setsize, strip.position = "bottom") + 
+  geom_bar(stat = "identity", color = "black", width = 0.8, position = position_dodge(0.8)) +
+  geom_errorbar(aes(ymin = acc - ci, ymax = acc + ci), width = .3, linewidth = 0.5, position = position_dodge(0.8)) + 
+  scale_y_continuous(limits = c(0,1.1)) +
+  theme_classic() + 
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    strip.text.y = element_text(size = 17, face = "bold")
+  ) +
+  scale_fill_manual(values = cpb) +
+  theme(
+    axis.text.x = element_text(face = "bold", size = 12),
+    axis.title.x = element_blank(),
+    axis.text.y = element_text(face = "bold", size = 15),
+    axis.ticks.x = element_blank(),
+    strip.text.x = element_text(size = 12, face = "bold")
+  ) + 
+  #theme(
+   # legend.position = "none") +
+  theme(
+    plot.title = element_text(size = 19, face = "bold", hjust = 0.5),
+    axis.title.y = element_text(size = 17, face = "bold", margin = margin(r = 5)),
+    strip.background = element_blank(),
+    strip.placement = "outside",
+    strip.switch.pad.grid = unit(0, "lines")
+  ) +
+  ylab("Accuracy") +
+  labs(fill = "");accbar
+
+######### Bind RT and Acc together
+bindbar = plot_grid(rtbar, accbar, labels = "AUTO")
+bindbar
+
+```
+
+#Graph for commonXFL setsize collapse
+```{r}
+############# Graph
+# RT
+## Calculates mean, sd, se and IC
+ rtsummary <- search %>% filter(setsize!= "1 target", FL!= "N/A", group != "Unsure", correct == 1) %>%
+   group_by(common, FL, setsize) %>%
+   summarise(
+     n = n(),
+     sd = sd(RT, na.rm = TRUE),
+     rt = mean(RT)
+   )%>%
+   mutate(se=sd/sqrt(n))  %>%
+   mutate(ci=se * qt((1-0.05)/2 + .5, n-1)) %>%
+   mutate(transrt = rt-1000)
+
+
+# Define the color panel with 6 different colors
+cpb <- c( "#253D8C", "#BAB3B7",  "#7586c2", "lightgrey")
+
+# Create the plot
+rtbar <- ggplot(data = rtsummary, aes(x = FL, y = transrt, fill = interaction(common, setsize))) + 
+  facet_wrap(~ setsize, strip.position = "bottom") + 
+  geom_bar(stat = "identity", color = "black", width = 0.8, position = position_dodge(0.8)) +
+  geom_errorbar(aes(ymin = transrt - se, ymax = transrt + se), width = .3, linewidth = 0.5, position = position_dodge(0.8)) + 
+  scale_y_continuous(limits = c(0, 600), breaks = seq(0, 600, 100), labels = seq(1000, 1600, 100)) +
+  theme_classic() + 
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    strip.text.y = element_text(size = 17, face = "bold")
+  ) +
+  scale_fill_manual(values = cpb) +
+  theme(
+    axis.text.x = element_text(face = "bold", size = 12),
+    axis.title.x = element_blank(),
+    axis.text.y = element_text(face = "bold", size = 15),
+    axis.ticks.x = element_blank(),
+    strip.text.x = element_text(size = 12, face = "bold")
+  ) + 
+  #theme(
+   # legend.position = "none") +
+  theme(
+    plot.title = element_text(size = 19, face = "bold", hjust = 0.5),
+    axis.title.y = element_text(size = 17, face = "bold", margin = margin(r = 5)),
+    strip.background = element_blank(),
+    strip.placement = "outside",
+    strip.switch.pad.grid = unit(0, "lines")
+  ) +
+  ylab("Reaction Time (ms)") +
+  labs(fill = "");rtbar
+
+
+# Acc
+## Calculates mean, sd, se and IC
+accsummary <- search %>% filter(setsize!= "1 target", FL!= "N/A", group != "Unsure") %>%
+   group_by(common, FL, setsize) %>%
+   summarise(
+     n = n(),
+     sd = sd(correct, na.rm = TRUE),
+     acc = mean(correct)
+   )%>%
+   mutate(se=sd/sqrt(n))  %>%
+   mutate(ci=se * qt((1-0.05)/2 + .5, n-1)) 
+
+
+# Define the color panel with 6 different colors
+cpb <- c( "#253D8C", "#BAB3B7",  "#7586c2", "lightgrey")
+
+# Create the plot
+accbar <- ggplot(data = accsummary, aes(x = FL, y = acc, fill = interaction(common, setsize))) + 
+  facet_wrap(~ setsize, strip.position = "bottom") + 
+  geom_bar(stat = "identity", color = "black", width = 0.8, position = position_dodge(0.8)) +
+  geom_errorbar(aes(ymin = acc - se, ymax = acc + se), width = .3, linewidth = 0.5, position = position_dodge(0.8)) + 
+  scale_y_continuous(limits = c(0,1.1)) +
+  theme_classic() + 
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    strip.text.y = element_text(size = 17, face = "bold")
+  ) +
+  scale_fill_manual(values = cpb) +
+  theme(
+    axis.text.x = element_text(face = "bold", size = 12),
+    axis.title.x = element_blank(),
+    axis.text.y = element_text(face = "bold", size = 15),
+    axis.ticks.x = element_blank(),
+    strip.text.x = element_text(size = 12, face = "bold")
+  ) + 
+  #theme(
+   # legend.position = "none") +
+  theme(
+    plot.title = element_text(size = 19, face = "bold", hjust = 0.5),
+    axis.title.y = element_text(size = 17, face = "bold", margin = margin(r = 5)),
+    strip.background = element_blank(),
+    strip.placement = "outside",
+    strip.switch.pad.grid = unit(0, "lines")
+  ) +
+  ylab("Accuracy") +
+  labs(fill = "");accbar
+
+######### Bind RT and Acc together
+bindbar = plot_grid(rtbar, accbar, labels = "AUTO")
+bindbar
+
+```
+
+
+```{r line graph including 1 target}
+rtline <- searchRT %>%
+   group_by(setsize, common) %>%
+   summarise(
+     n = n(),
+     sd = sd(RT, na.rm = TRUE),
+     rt = mean(RT)
+   )%>%
+   mutate(se=sd/sqrt(n))  %>%
+   mutate(ci=se * qt((1-0.05)/2 + .5, n-1)) %>%
+   mutate(transrt = rt-1000)
+
+searchRT_no1 = searchRT %>% filter(common!= "1 target") %>% filter(serialPos != "N/A")
+# line graph
+RT2 = ggplot(data = searchRT_no1, aes(x = serialPos, y = RT, group = common)) + 
+  stat_summary(fun = mean, fun.min = mean, fun.max = mean, geom = "point", size = 4, aes(shape = common, color = common)) + 
+  facet_wrap(~ setsize, strip.position = "bottom")+
+  stat_summary(fun.data = mean_se, geom = "errorbar", aes(width = 0.1, color = common)) + 
+  stat_summary(fun=mean, geom="line", size = 1.2, aes(linetype = common, color = common)) +
+  coord_cartesian(ylim=c(900,1800)) +
+  xlab("Serial Position") + ylab("Reaction Times (ms)") +
+  labs(linetype = "Color of Targets", shape = "Color of Targets", color = "Color of Targets") +
+  scale_colour_brewer(palette = "Set2") +
+  theme(axis.text.x = element_text(face="bold", size=18),
+        axis.text.y = element_text(face="bold", size=18),
+        axis.line = element_line(colour = "black", size = 1, linetype = "solid"),
+        legend.position= c(0.3, 0.9),
+        legend.text = element_text(size = 15),
+        legend.title = element_text(size = 15, face = "bold"),
+        legend.direction="vertical",
+        plot.title = element_text(size = 25, face = "bold", hjust = 0.5),
+        axis.title.x = element_text(size = 19, face = "bold", margin = margin(t = 10)),
+        axis.title.y = element_text(size = 19, face = "bold", margin = margin(r = 5)),
+        panel.background = element_blank(), # This line removes the gray background
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank()
+  );RT2
+
+
+
+# accline
+# line graph
+RT2a = ggplot(data = accsummary, aes(x = cond_level, y = acc, group = cond_color))+ 
+  stat_summary(fun = mean, fun.min = mean,
+               fun.max = mean, geom = "point", size = 4, aes(shape = cond_color, color = cond_color)) +  stat_summary(fun.data = mean_se,  
+                 geom = "errorbar", aes(width = 0.1, color = cond_color)) + stat_summary(fun.y=mean, geom="line", size = 1.2, aes(linetype = cond_color, color = cond_color))+coord_cartesian(ylim=c(0.5,1))+ ggtitle("Accuracy") + xlab("Number of Common Features") + ylab("Accuracy") +labs(linetype = "Targets Color", shape = "Targets Color", color = "Targets Color") + scale_colour_brewer(palette = "Set2") + theme(axis.text.x = element_text(face="bold",  size=18),axis.text.y = element_text(face="bold", size=18))+ theme( axis.line = element_line(colour = "black",size = 1, linetype = "solid")) + theme(legend.position= c(0.5, 0.9),legend.text = element_text(size = 19),legend.title = element_text(size = 21),legend.direction="horizontal") +  theme(
+    plot.title = element_text(size = 25, face = "bold", hjust = 0.5)) +theme(
+    axis.title.x = element_text(size = 20, face = "bold", margin = margin(t = 10)),
+    axis.title.y = element_text(size = 20, face = "bold", margin = margin(r = 5))
+  )
+RT2a
+```
+
+
+```{r checking setsize = 1 as baseline}
+searchRT = search %>% filter(correct == 1)
+################ RT normalization based on setsizes
+library(dplyr)
+
+# Calculate baseline for each subID for set size "1 target"
+baseline_data <- searchRT %>%
+  filter(setsize == "1 target") %>%
+  group_by(subID, common) %>%
+  summarise(baseline = mean(RT, na.rm = TRUE), .groups = 'drop')
+
+# Join this baseline back to the original dataset
+searchRT <- searchRT %>%
+  left_join(baseline_data, by = "subID")
+
+# Calculate norm_score using the baseline
+searchRT <- searchRT %>%
+  group_by(subID, setsize, common) %>%
+  mutate(norm_score = ifelse(setsize %in% c("3 targets", "5 targets"),
+                             mean(RT, na.rm = TRUE) / baseline.y, 
+                             ifelse(setsize == "1 target", 1, NA)))
+
+# Ensure '1 target' gets a normalized score of 1 (if not already set)
+searchRT <- searchRT %>%
+  ungroup()  # Ungroup for any further operations
+
+###################### Export my data ###############################
+write.csv(searchRT , "searchRT_norm.csv", row.names = FALSE)
+
+##################### Visualization-Line graph ########################
+RT_norm = searchRT %>% filter(setsize != "1 target")
+ggplot(data = RT_norm, aes(x = setsize, y = norm_score, group = common)) + 
+  stat_summary(fun = mean, fun.min = mean, fun.max = mean, geom = "point", size = 4, aes(shape = common, color = common)) + 
+  #facet_wrap(~ setsize, strip.position = "bottom")+
+  stat_summary(fun.data = mean_se, geom = "errorbar", aes(width = 0.1, color = common)) + 
+  stat_summary(fun=mean, geom="line", size = 1.2, aes(linetype = common, color = common)) +
+  coord_cartesian(ylim=c(1,2)) +
+  xlab("Setsize") + ylab("Normalized Reaction Time") +
+  labs(linetype = "Color of Targets", shape = "Color of Targets", color = "Color of Targets") +
+  scale_colour_brewer(palette = "Set2") +
+  theme(axis.text.x = element_text(face="bold", size=18),
+        axis.text.y = element_text(face="bold", size=18),
+        axis.line = element_line(colour = "black", size = 1, linetype = "solid"),
+        legend.position= c(0.3, 0.9),
+        legend.text = element_text(size = 15),
+        legend.title = element_text(size = 15, face = "bold"),
+        legend.direction="vertical",
+        plot.title = element_text(size = 25, face = "bold", hjust = 0.5),
+        axis.title.x = element_text(size = 19, face = "bold", margin = margin(t = 10)),
+        axis.title.y = element_text(size = 19, face = "bold", margin = margin(r = 5)),
+        panel.background = element_blank(), # This line removes the gray background
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank()
+  )
+```
+
+
+```{r linear mixed effects model for RT}
+# y = RT
+# x1 = setsize, x2 = common/no common (might not need), x3 = color prime, xrand = subject.
+
+# import dataset
+searchRT_norm <- read.csv("~/Downloads/searchRT_norm.csv")
+
+# make interested variables into factors
+searchRT_norm$subID = as.factor(searchRT_norm$subID)
+searchRT_norm$setsize = as.factor(searchRT_norm$setsize)
+searchRT_norm$common = as.factor(searchRT_norm$common)
+
+# Load the lme4 package
+library(lme4)
+
+# Fit the linear model
+model <- lmer(correct ~ prime_color + common + (1|subID), data = search)
+
+# Summarize the linear model
+summary(model)
+
+########R Code for Log-Transformed Linear Mixed-Effects Model
+
+# Transform the response variable using logarithm
+searchRT_norm$log_RT <- log(searchRT_norm$RT)
+
+# Fit the logistic regression model
+logmodel <- lmer(log_RT ~ setsize + (1|subID), data = searchRT_norm)
+
+# Summarize the model
+summary(logmodel)
+
+
+############ model comparison
+# Calculate AIC and BIC. Lower means better
+AIC(model)
+BIC(model)
+
+AIC(logmodel)
+BIC(logmodel)
+
+#Generate diagnostic plots to check the assumptions of the models (normality of residuals, homoscedasticity)
+# Diagnostic plots for linear model
+plot(model)
+
+# Diagnostic plots for log-transformed model
+plot(logmodel)
+```
+
+
+####################### Checking N, N-1 trials #################
+```{r priming checking}
+# import no trial removed data
+data = df_acc_remove
+
+########### mutata & filter interested variables
+# filter search task
+data = data %>%
+  filter(tasks == "search")
+
+# Create new variable that has current trial target name.
+# Define the words to search for
+target_words <- c("yoyo", "apple", "ladybug", "sofa", "rose", "ball", "berry", 
+                  "jellyfish", "recycle box", "dahlia", "sand toy", "banana", 
+                  "chick", "podium", "sunflower", "lego", "pear", "frog", 
+                  "chair", "clover")
+
+# Create a function to extract the target word
+extract_target <- function(row) {
+  for (col in 7:12) {  # Assuming the columns of interest are "stim2" to "stim7"
+    for (word in target_words) {
+      if (grepl(word, row[col])) {
+        return(word)
+      }
+    }
+  }
+  return(NA)
+}
+
+# Apply the function to each row
+data <- data %>%
+  rowwise() %>%
+  mutate(current_target = extract_target(cur_data()))
+
+# Ungroup the data frame after rowwise operations
+data <- ungroup(data)
+
+# View the modified data frame
+head(data)
+
+
+# now create N-1 rows
+# there are 200 trials for each participants. so we need to ignore the first row of each participants for the lag1 column.
+# Install and load necessary packages
+# Define a function to add the previous value columns
+add_previous_values <- function(data, id_col, color_col, target_col) {
+  data <- data %>%
+    group_by(!!sym(id_col)) %>%  # Group by participant ID
+    mutate(
+      previous_color = lag(!!sym(color_col), default = NA),
+      previous_target = lag(!!sym(target_col), default = NA)
+    ) %>%
+    ungroup()
+  
+  return(data)
+}
+
+# Apply the function to your data
+data <- add_previous_values(data, "subID", "cond_color", "current_target")
+
+# Create the new column 'prime_color'
+data <- data %>%
+  mutate(prime_color = ifelse(cond_color == previous_color, "repeat", "no repeat"))
+
+
+# View the modified data frame
+head(data)
+
+# Export the modified dataset to a CSV file
+write.csv(search, "Nback_data.csv", row.names = FALSE)
+```
+
+
+# checking prime
+```{r stats test}
+search$prime_color = as.factor(search$prime_color)
+search$common = as.factor(search$common)
+search$setsize = as.factor(search$setsize)
+search$subID = as.factor(search$subID)
+################################## ACC ##################################
+###### use color group (marginal common main effect)
+# Create data_for_analysis_acc with filtered and grouped data
+data_for_analysis_acc <- search %>%
+  filter(!is.na(previous_color)) %>%
+  filter(!is.na(previous_target)) %>%
+  group_by(subID, prime_color, common) %>%
+  summarise(accuracy = mean(correct), .groups = 'drop')
+
+aov_results_acc <- aov_car(data = data_for_analysis_acc, 
+                       formula = accuracy ~ prime_color*common + Error(subID/(prime_color*common)))
+
+summary(aov_results_acc)
+
+effect_sizes_acc <- eta_squared(aov_results_acc)
+print(effect_sizes_acc)
+
+
+# prime target v.s. common
+data_for_analysis_acc <- search %>%
+  filter(!is.na(previous_color)) %>%
+  filter(!is.na(previous_target)) %>%
+  filter(!is.na(prime_target)) %>%
+  filter(common != "1 target")%>%
+  group_by(subID, prime_target, common) %>%
+  summarise(accuracy = mean(correct), .groups = 'drop')
+
+
+anova_results_acc <- aov_car(data = data_for_analysis_acc, 
+                         formula = accuracy ~ common * prime_target + Error(subID / (common * prime_target)))
+summary(anova_results_acc)
+#### post-hoc needed
+#for common main effect
+emmeans_results <- emmeans(anova_results_acc, ~ common * prime_target)
+# Pairwise comparisons with Bonferroni adjustment
+pairwise_comparisons <- pairs(emmeans_results, adjust = "bonferroni")
+print(pairwise_comparisons)
+################################### RT ##################################
+
+# prime color v.s. common
+data_for_analysis_rt <- search %>%
+  filter(correct == 1) %>%
+  filter(!is.na(previous_color)) %>%
+  filter(!is.na(previous_target)) %>%
+  group_by(subID, prime_color, common) %>%
+  summarise(rt = mean(RT), .groups = 'drop')
+
+
+anova_results_rt <- aov_car(data = data_for_analysis_rt, 
+                         formula = rt ~ common * prime_color + Error(subID / (common * prime_color)))
+summary(anova_results_rt)
+
+
+# prime target v.s. common
+search = search %>%
+  mutate(prime_target = ifelse(current_target == previous_target, "repeat", "no repeat"))
+data_for_analysis_rt <- search %>%
+  filter(correct == 1) %>%
+  filter(!is.na(previous_color)) %>%
+  filter(!is.na(previous_target)) %>%
+  filter(!is.na(prime_target)) %>%
+  filter(common != "1 target")%>%
+  group_by(subID, prime_target, common) %>%
+  summarise(rt = mean(RT), .groups = 'drop')
+
+
+anova_results_rt <- aov_car(data = data_for_analysis_rt, 
+                         formula = rt ~ common * prime_target + Error(subID / (common * prime_target)))
+summary(anova_results_rt)
+
+effect_sizes_rt <- eta_squared(anova_results_rt)
+print(effect_sizes_rt)
+
+#### post-hoc needed
+#for common main effect
+emmeans_results <- emmeans(anova_results_rt, ~ common * setsize)
+# Pairwise comparisons with Bonferroni adjustment
+pairwise_comparisons <- pairs(emmeans_results, adjust = "bonferroni")
+print(pairwise_comparisons)
+
+# calculate effect size of t-test
+library(effsize)
+# Assuming you have two groups for comparison (replace with your actual data)
+group1 <- data_for_analysis_rt[data_for_analysis_rt$common == "common", "rt"]
+group2 <- data_for_analysis_rt[data_for_analysis_rt$common == "no common", "rt"]
+# Convert the 'accuracy' column of the tibble to a numeric vector
+group1_vector <- as.numeric(group1$rt)
+# Do the same for group2
+group2_vector <- as.numeric(group2$rt)
+# Now calculate Cohen's d
+d <- cohen.d(group1_vector, group2_vector)
+print(d)
+
+##for setsize main effect
+emmeans_results <- emmeans(anova_results_rt, ~ setsize)
+# Pairwise comparisons with Bonferroni adjustment
+pairwise_comparisons <- pairs(emmeans_results, adjust = "bonferroni")
+print(pairwise_comparisons)
+
+# calculate effect size of t-test
+library(effsize)
+# Assuming you have two groups for comparison (replace with your actual data)
+group1 <- data_for_analysis_rt[data_for_analysis_rt$setsize == "3 targets", "rt"]
+group2 <- data_for_analysis_rt[data_for_analysis_rt$setsize == "5 targets", "rt"]
+# Convert the 'rt' column of the tibble to a numeric vector
+group1_vector <- as.numeric(group1$rt)
+# Do the same for group2
+group2_vector <- as.numeric(group2$rt)
+# Now calculate Cohen's d
+d <- cohen.d(group1_vector, group2_vector)
+print(d)
+
+# NO use color group (non sig)
+filtered_data_rt <- searchRT %>% 
+  filter(setsize != "1 target", group == "Didn't Use")
+
+data_for_analysis_rt <- filtered_data_rt %>%
+  group_by(subID, common, setsize) %>%
+  summarise(rt = mean(RT), .groups = 'drop')
+
+
+anova_results_rt <- aov_car(data = data_for_analysis_rt, 
+                         formula = rt ~ common * setsize + Error(subID / (common * setsize)))
+summary(anova_results_rt)
+
+effect_sizes_rt <- eta_squared(anova_results_rt)
+print(effect_sizes_rt)
+
+#### post-hoc needed
+#for common main effect
+emmeans_results <- emmeans(anova_results_rt, ~ common * setsize)
+# Pairwise comparisons with Bonferroni adjustment
+pairwise_comparisons <- pairs(emmeans_results, adjust = "bonferroni")
+print(pairwise_comparisons)
+
+# calculate effect size of t-test
+library(effsize)
+# Assuming you have two groups for comparison (replace with your actual data)
+group1 <- data_for_analysis_rt[data_for_analysis_rt$common == "common", "rt"]
+group2 <- data_for_analysis_rt[data_for_analysis_rt$common == "no common", "rt"]
+# Convert the 'accuracy' column of the tibble to a numeric vector
+group1_vector <- as.numeric(group1$rt)
+# Do the same for group2
+group2_vector <- as.numeric(group2$rt)
+# Now calculate Cohen's d
+d <- cohen.d(group1_vector, group2_vector)
+print(d)
+
+##for setsize main effect
+emmeans_results <- emmeans(anova_results_rt, ~ setsize)
+# Pairwise comparisons with Bonferroni adjustment
+pairwise_comparisons <- pairs(emmeans_results, adjust = "bonferroni")
+print(pairwise_comparisons)
+
+# calculate effect size of t-test
+library(effsize)
+# Assuming you have two groups for comparison (replace with your actual data)
+group1 <- data_for_analysis_rt[data_for_analysis_rt$setsize == "3 targets", "rt"]
+group2 <- data_for_analysis_rt[data_for_analysis_rt$setsize == "5 targets", "rt"]
+# Convert the 'rt' column of the tibble to a numeric vector
+group1_vector <- as.numeric(group1$rt)
+# Do the same for group2
+group2_vector <- as.numeric(group2$rt)
+# Now calculate Cohen's d
+d <- cohen.d(group1_vector, group2_vector)
+print(d)
+```
+
+```{r one way ANOVA check 4 distractor colors}
+################################## ACC ##################################
+###### use color group (marginal common main effect)
+filtered_data_acc <- search %>% 
+  filter(setsize != "1 target")
+
+data_for_analysis_acc <- filtered_data_acc %>%
+  group_by(subID, cond_color) %>%
+  summarise(accuracy = mean(correct), .groups = 'drop')
+
+aov_results_acc <- aov_car(data = data_for_analysis_acc, 
+                       formula = accuracy ~ cond_color+ Error(subID/(cond_color)))
+
+summary(aov_results_acc)
+
+effect_sizes_acc <- eta_squared(aov_results_acc)
+print(effect_sizes_acc)
+
+############################### RT ###############################
+
+filtered_data_rt <- searchRT %>% 
+  filter(setsize != "1 target")
+
+data_for_analysis_rt <- filtered_data_rt %>%
+  group_by(subID, common, setsize) %>%
+  summarise(rt = mean(RT), .groups = 'drop')
+
+
+anova_results_rt <- aov_car(data = data_for_analysis_rt, 
+                         formula = rt ~ common * setsize + Error(subID / (common * setsize)))
+summary(anova_results_rt)
+
+effect_sizes_rt <- eta_squared(anova_results_rt)
+print(effect_sizes_rt)
+
+#### post-hoc needed
+
+#for common main effect
+emmeans_results <- emmeans(anova_results_rt, ~ common)
+# Pairwise comparisons with Bonferroni adjustment
+pairwise_comparisons <- pairs(emmeans_results, adjust = "bonferroni")
+print(pairwise_comparisons)
+
+# calculate effect size of t-test
+library(effsize)
+# Assuming you have two groups for comparison (replace with your actual data)
+group1 <- data_for_analysis_rt[data_for_analysis_rt$common == "common", "rt"]
+group2 <- data_for_analysis_rt[data_for_analysis_rt$common == "no common", "rt"]
+# Convert the 'accuracy' column of the tibble to a numeric vector
+group1_vector <- as.numeric(group1$rt)
+# Do the same for group2
+group2_vector <- as.numeric(group2$rt)
+# Now calculate Cohen's d
+d <- cohen.d(group1_vector, group2_vector)
+print(d)
+
+##for setsize main effect
+emmeans_results <- emmeans(anova_results_rt, ~ setsize)
+# Pairwise comparisons with Bonferroni adjustment
+pairwise_comparisons <- pairs(emmeans_results, adjust = "bonferroni")
+print(pairwise_comparisons)
+
+# calculate effect size of t-test
+library(effsize)
+# Assuming you have two groups for comparison (replace with your actual data)
+group1 <- data_for_analysis_rt[data_for_analysis_rt$setsize == "3 targets", "rt"]
+group2 <- data_for_analysis_rt[data_for_analysis_rt$setsize == "5 targets", "rt"]
+# Convert the 'rt' column of the tibble to a numeric vector
+group1_vector <- as.numeric(group1$rt)
+# Do the same for group2
+group2_vector <- as.numeric(group2$rt)
+# Now calculate Cohen's d
+d <- cohen.d(group1_vector, group2_vector)
+print(d)
+```
+
+```{r t test for groups of acc}
+group1 = search %>%
+  filter(group == "Use Color", tasks == "search", common != "1 target") %>%
+  dplyr::select(subID,correct) %>%
+  group_by(subID) %>%
+  summarise(acc = mean(correct))
+
+group2 = search %>%
+  filter(group == "Didn't Use",tasks == "search", common != "1 target") %>%
+  dplyr::select(subID,correct) %>%
+  group_by(subID) %>%
+  summarise(acc = mean(correct))
+
+t.test(group1$acc, group2$acc)
+```
+
+```{r training df}
+training = alldataWithGroup %>%
+  filter(tasks == "training") %>%
+  dplyr::select(subID, cond_level, correct, RT, group)
+write.csv(training, "training_Expt2.csv")
+```
